@@ -82,6 +82,16 @@ child_store_done() {
   child_store done "$1" "$(ts_iso)"
 }
 
+# child_session_match <role> <repo> -- emit a TSV row (key, id, branch, status,
+# updated_at) for every still-fresh stored child of <role> in <repo> that has a
+# resumable id. `cerebro answer` uses this to find the session to resume when no
+# explicit discriminator is passed (and to detect the ambiguous many-match case).
+child_session_match() {
+  local f; f="$(child_sessions_file)"
+  [[ -f "$f" ]] || return 0
+  child_store match "${CEREBRO_CHILD_SESSION_TTL:-86400}" "$1" "$2"
+}
+
 # child_store_list_running -- emit a TSV row
 # (key, role, repo, branch, log, started_at) for every still-fresh child left
 # at status=running (interrupted or failed before it could mark itself done).

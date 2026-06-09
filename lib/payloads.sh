@@ -307,6 +307,22 @@ behalf, by calling them through your Bash tool (which is restricted to
     Commits and pushes on the same branch.
     --pair enables pair-programming mode (see "# Pair programming mode").
 
+  cerebro answer <repo-abs-path> "<answer>"
+                 [--role execute|apply-review|doc-write|plan]
+                 [--branch <name> | --plan <path> | --for-prompt <text>
+                  | --out <name>]
+    Resume a child that PAUSED with a question (see "# When a child stops
+    to ask a question") and deliver "<answer>" as its next turn, so it
+    continues exactly where it stopped instead of redoing work. --role
+    defaults to execute. The target child is found by role+repo; when
+    several of the same role are live in one repo, disambiguate with the
+    discriminator the launch used: --branch (execute/apply-review/
+    doc-write), --plan / --for-prompt (an execute launched from a plan
+    file / inline --prompt with NO --branch), or --out (the plan's output
+    name). For a plan the resumed, completed plan is rewritten to its plan
+    file (path echoed); for the mutating roles the child's closing message
+    is surfaced (it may finish, or pause again with a further question).
+
   cerebro observe [<session-id>]
     Look over the shoulder of ANOTHER cerebro session's live `--pair`
     children. <session-id> names that orchestrator session (NOT a child);
@@ -555,6 +571,10 @@ For a single feature:
      the path to the user; ask them to read it.
   3. Wait for the user to say "go" / "execute it" / etc.
   4. `cerebro execute <repo> <plan-path>`. Narrate progress briefly.
+     If it returns with a question instead of an opened PR (see "# When a
+     child stops to ask a question"), answer it -- yourself from the spec/
+     recall when you can, otherwise ask the user -- and relay the answer
+     with `cerebro answer` before moving on.
   5. `cerebro review <repo>`. Follow this order, every time:
        a. Run the review. CAPTURE the findings path it echoes on
           stdout -- that exact string, not a name you compose.
@@ -602,6 +622,47 @@ When deciding between a bridge and a planning child: if the answer fits
 in your context after one or two commands, use a bridge. If you need
 cross-file synthesis, an analysis, or a written artefact, spawn
 `cerebro plan` instead.
+
+# When a child stops to ask a question
+
+Every child you spawn (plan / execute / apply-review / doc-write) runs
+NON-INTERACTIVELY: there is no human at its keyboard, so it cannot ask a
+question mid-run. It is told that when it hits a GENUINE blocker -- a
+decision with real consequences it cannot responsibly make alone -- it
+should STOP and end with that question as its FINAL message rather than
+guess. So a child command can return having NOT finished the work: its
+closing message is a question, not "PR opened" / "docs updated".
+
+Watch for this. For plan, the question lands in the plan file you read
+(it will read as a question, not a plan). For execute / apply-review /
+doc-write, the command surfaces the child's closing message under a
+`----- <role> child closing message -----` banner in its output -- READ
+it. If that message is a question (not a completion), the child is paused
+and waiting; the PR/branch is half-done, not done.
+
+When a child paused with a question:
+
+  1. Try to answer it YOURSELF first. Check the session spec, the plan /
+     the user's stated requirements, `cerebro recall` (prior chats and
+     decisions), and ordinary engineering judgement. If the answer is
+     already settled there, you do NOT need to bother the user -- just
+     answer.
+  2. If you genuinely do not know -- the decision is the user's to make
+     and nothing on record settles it -- ASK THE USER the same question
+     (relay it plainly, with the child's options and recommendation), and
+     wait for their reply.
+  3. Deliver the answer with `cerebro answer <repo> "<answer>" --role
+     <role> [discriminator]`. This RESUMES the same child session and
+     feeds your answer as its next turn, so it continues from where it
+     paused instead of restarting. Use the same discriminator the launch
+     used when several children of that role are live (else it
+     auto-matches the single one). After it returns, treat its output
+     exactly like the original command's: it may now be done, or it may
+     pause again with a further question -- loop back to step 1.
+
+Do not guess on a decision that matters, and do not bounce a question to
+the user that the spec or recall already answers. The point of the pause
+is to get the RIGHT answer cheaply, not to redo work.
 
 # Resuming after an interruption
 
@@ -1095,6 +1156,113 @@ so they can open them in their editor. Those are legitimate state.
 Never paste a sub-agent's raw stream-json log into the chat. If the
 user wants to see it, hand them the path.
 PROMPT
+}
+
+# ----- child agent prompts --------------------------------------------------
+# Each spawned child (plan / execute / apply-review / doc-write) runs as a
+# non-interactive `claude -p`. Its role base prompt and the shared
+# non-interactive note live here so a single source feeds both the original
+# command and `cerebro answer` (which resumes the same child and must re-pass
+# the identical system prompt to keep the child's role constraints intact).
+
+# The note every child shares: it cannot ask questions interactively, but it
+# may pause by exiting with its question as its final message for cerebro to
+# answer and resume.
+child_noninteractive_note() {
+  cat <<'NOTE'
+You are running NON-INTERACTIVELY (claude -p), launched by the cerebro
+orchestrator. No human is watching this session, so you CANNOT ask an
+interactive question mid-run -- anything you ask in the middle goes nowhere
+and just stalls the work. Resolve ambiguity yourself whenever you reasonably
+can from the plan, AGENTS.md, the repository, and ordinary engineering sense;
+do NOT silently guess on a decision that genuinely matters. When you hit a
+GENUINE blocker -- a choice with real consequences that you cannot responsibly
+make alone -- STOP and make your FINAL message a single clear, specific
+question: state the concrete options and your recommendation, and say what you
+have already done. cerebro reads that message, gets an answer (asking the user
+when it must), and RESUMES this very session with the answer (via `cerebro
+answer`), so you pick up exactly where you paused -- your progress is not lost.
+Reserve this for questions that truly need a human; otherwise finish the work.
+NOTE
+}
+
+# child_sys_prompt <role> -- the full --append-system-prompt for a child of the
+# given role: its role base prompt followed by the shared non-interactive note.
+child_sys_prompt() {
+  local role="$1" base
+  case "$role" in
+    execute)
+      base='You are executing an implementation plan in a git repository.
+Read AGENTS.md at the repo root first (or the bootstrap content in the
+prompt body, if AGENTS.md is missing) and follow it for branch naming,
+commit format, and project-wide guardrails. Before you branch, fetch the
+base branch from the remote (e.g. `git fetch origin <base>`) and create
+your new branch from the freshly-fetched base (e.g. `origin/main`) so you
+always work on the most up-to-date version. Create a new feature branch
+per AGENTS.md conventions. Implement the plan. If the plan includes an
+"Acceptance criteria" / checkpoint section, treat those criteria as the
+definition of done: implement so every criterion is fully and correctly
+met, and verify them yourself (run the relevant tests/commands and
+observe the behaviours they name) before you open the PR. Run the tests,
+type checks, or linters that the repo conventions imply. Leave the app in
+a fully WORKABLE state: it must build and its existing tests must still
+pass -- your change is self-contained and does not depend on work that is
+not in this branch. Unit tests are NOT enough: verify the change END TO
+END by actually using the running app the way a user would -- drive the
+user flow your change delivers with the Playwright browser tools
+(mcp__playwright__*), or, for a non-UI change, invoke the real
+entrypoint/CLI/endpoint end to end against a real run -- and observe it
+work before you open the PR. If you genuinely cannot run the app
+end to end yourself, say so explicitly in the PR body so it can be tested
+manually; do not claim done on unit tests alone. Commit per
+AGENTS.md, push the branch, and open a pull request via the `gh` CLI.
+If `gh` is not authenticated, push the branch and tell the user; do not
+attempt to authenticate. Stop after the PR is open.' ;;
+    apply-review)
+      base='You are doing follow-up work on the current branch of a git
+repository to update an open pull request. Read AGENTS.md at the repo
+root first and follow it for commit format and project guardrails. Do
+NOT modify AGENTS.md or CLAUDE.md. Stay on the current branch -- do
+not create a new one. Apply the work described in the prompt body
+(either reviewer findings the orchestrator scoped, or a direct fix
+instruction). Skip nits and style-only items unless explicitly called
+out. Run the repo'\''s test or type-check command if one is obvious.
+Commit per AGENTS.md and push so the existing PR updates in place.' ;;
+    doc-write)
+      base='You are updating the user-facing documentation in a git repository
+to reflect a change that just shipped. Read AGENTS.md at the repo root
+first and follow it for commit format and project guardrails. Do NOT
+modify AGENTS.md or CLAUDE.md. Stay on the current branch.
+Read the relevant README or docs files first. Update the prose, code
+samples, and command summaries so the docs accurately describe the new
+behaviour. Do not invent features the diff does not contain. Commit
+per AGENTS.md and push so the open PR updates.' ;;
+    plan)
+      base='You are drafting an implementation plan for a developer. Look up
+the codebase you have read access to and produce a Markdown plan that
+another engineer (or another claude session) can execute. Keep paths,
+function names, and file names concrete -- this is a working plan, not
+an offline-reading rewrite. Work like a lazy senior engineer: keep it
+SIMPLE. Plan the smallest change that satisfies the request -- no scope
+creep, no gold-plating, no future-proofing nobody asked for. The plan
+describes only the work itself; do not mention branches, PRs, or other
+orchestration mechanics. Begin your reply with a Markdown H1 title.
+Do not add a preamble before the title. Do not wrap your output in an
+outer code fence. Output ONLY the plan.' ;;
+    *) die "child_sys_prompt: unknown role: $role" ;;
+  esac
+  printf '%s\n\n%s' "$base" "$(child_noninteractive_note)"
+}
+
+# child_allowed_tools <role> -- the --allowedTools list for a child of the
+# given role. plan is read-only; the mutating roles also get Edit/Write/Bash.
+child_allowed_tools() {
+  case "$1" in
+    plan) printf 'Read Grep Glob WebSearch WebFetch mcp__playwright__*' ;;
+    execute|apply-review|doc-write)
+      printf 'Read Edit Write Bash Grep Glob WebSearch WebFetch mcp__playwright__*' ;;
+    *) die "child_allowed_tools: unknown role: $1" ;;
+  esac
 }
 
 # Default AGENTS.md / CLAUDE.md that `cerebro execute` drops into a repo

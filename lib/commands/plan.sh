@@ -35,23 +35,19 @@ cmd_plan() {
   local out_path="$plans_dir/$out_name.md"
   local child_log="$CEREBRO_SESSION_DIR/children/plan-$(ts_compact).jsonl"
 
-  local sys_prompt
-  sys_prompt='You are drafting an implementation plan for a developer. Look up
-the codebase you have read access to and produce a Markdown plan that
-another engineer (or another claude session) can execute. Keep paths,
-function names, and file names concrete -- this is a working plan, not
-an offline-reading rewrite. Work like a lazy senior engineer: keep it
-SIMPLE. Plan the smallest change that satisfies the request -- no scope
-creep, no gold-plating, no future-proofing nobody asked for. The plan
-describes only the work itself; do not mention branches, PRs, or other
-orchestration mechanics. Begin your reply with a Markdown H1 title.
-Do not add a preamble before the title. Do not wrap your output in an
-outer code fence. Output ONLY the plan.'
+  local sys_prompt; sys_prompt="$(child_sys_prompt plan)"
+
+  # Child-session continuity: persist the plan child's conversation id keyed on
+  # repo+role+out_name so a plan that PAUSED with a question can be resumed with
+  # an answer (`cerebro answer ... --role plan --out <name>`) and continue its
+  # exploration instead of re-planning from scratch.
+  local store_file; store_file="$(child_sessions_file)"
+  local ckey; ckey="$(child_key "$repo" plan "$out_name")"
 
   say "cerebro: planning in $repo -> $out_path"
   log_event "plan_started" "$out_path"
 
-  local opts=(-p --permission-mode bypassPermissions --allowedTools "Read Grep Glob WebSearch WebFetch mcp__playwright__*"
+  local opts=(-p --permission-mode bypassPermissions --allowedTools "$(child_allowed_tools plan)"
               --output-format stream-json --verbose
               --append-system-prompt "$sys_prompt")
   [[ -n "$CEREBRO_MODEL" ]] && opts+=(--model "$CEREBRO_MODEL")
@@ -70,13 +66,14 @@ $desc
 </request>"
 
   local rc
+  child_store_begin "$ckey" claude plan "$repo" "$out_name" "$child_log"
   ( cd "$repo" && \
     printf '%s' "$prompt" \
       | pair_feed "$pair" "$PAIR_FIFO" "$PAIR_STEER" "$child_log" "$PAIR_IDLE" \
       | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
         "${TIMEOUT_CMD[@]}" claude "${opts[@]}" 2>/dev/null \
       | tee "$child_log" \
-      | python3 -c "$PY_PARSE_STREAM" "$out_path" )
+      | python3 -c "$PY_PARSE_STREAM" "$out_path" "" "$store_file" "$ckey" )
   rc=$?
   pair_cleanup "$pair"
 
@@ -85,6 +82,7 @@ $desc
     die "plan: child claude failed (rc=$rc); see $child_log"
   fi
 
+  child_store_done "$ckey"
   log_event "plan_written" "$out_path"
   pair_report "$pair" "$child_log"
   echo "$out_path"

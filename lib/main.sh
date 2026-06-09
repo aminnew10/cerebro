@@ -19,6 +19,7 @@ main() {
     review) shift; cmd_review "$@" ;;
     apply-review) shift; cmd_apply_review "$@" ;;
     doc-write) shift; cmd_doc_write "$@" ;;
+    answer) shift; cmd_answer "$@" ;;
     steer) shift; cmd_steer "$@" ;;
     observe) shift; cmd_observe "$@" ;;
     recall) shift; cmd_recall "$@" ;;

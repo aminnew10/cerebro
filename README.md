@@ -65,7 +65,8 @@ can inspect a user repo without spawning a planning child; `git` and
 
 You talk only to the orchestrator. It decides when to call `cerebro
 plan`, `cerebro execute`, `cerebro review`, `cerebro apply-review`,
-`cerebro doc-write`, `cerebro recall`, `cerebro status`, the session
+`cerebro doc-write`, `cerebro answer` (resume a child that paused with a
+question), `cerebro recall`, `cerebro status`, the session
 spec (`cerebro spec`, `spec set`, `spec history`), or the
 preference-learning subcommands (`cerebro learnings`, `learn-note`,
 `learn-set`) based on the conversation. A typical feature loop: describe the change → the
@@ -196,6 +197,28 @@ replanning) — and tells you what it changed. Your steering is treated as
 a direct instruction; only a steer that changes *what* the spec asks for
 in a genuinely ambiguous way is bounced back for confirmation.
 
+**Paused children & `cerebro answer`.** Every spawned child (`plan`,
+`execute`, `apply-review`, `doc-write`) runs non-interactively, so it
+*cannot* ask a question mid-run — there is no human at its keyboard. Each
+child is told that when it hits a genuine blocker (a decision with real
+consequences it can't responsibly make alone) it should stop and end with
+that question as its final message rather than guess. So a child command
+can return having *not* finished: for `plan` the question lands in the
+plan file; for the mutating roles the child's closing message is surfaced
+under a `----- <role> child closing message -----` banner in the command
+output. The orchestrator watches for this. When a child pauses with a
+question it first tries to answer from the session spec, the plan, and
+`cerebro recall`; only if the decision is genuinely the user's and nothing
+on record settles it does it relay the question to you. It then delivers
+the answer with `cerebro answer <repo> "<answer>" --role <role>`, which
+**resumes the same child session** and feeds the answer as its next turn,
+so the child continues exactly where it paused instead of redoing work.
+When several children of the same role are live in one repo, the launch
+discriminator disambiguates: `--branch` (`execute`/`apply-review`/
+`doc-write`), `--plan` / `--for-prompt` (an `execute` started from a plan
+file or inline prompt with no `--branch`), or `--out` (the plan name);
+with none it auto-matches the single resumable session of that role.
+
 **Scope-filtered review forwarding.** When summarising a `cerebro
 review`, the orchestrator forwards only findings clearly within the
 plan's scope to `cerebro apply-review`. Out-of-scope improvements
@@ -298,7 +321,7 @@ Env: `CEREBRO_HOME`, `CEREBRO_MODEL`, `CEREBRO_REVIEW_MODEL`,
 
 `CEREBRO_TIMEOUT` is the wall-clock cap (seconds) on each child agent call. It defaults to `0` (no cap) so long-running children — Playwright login/browser driving, waiting on the build pipeline — are never killed. Set it to a positive integer to re-enable a cap.
 
-Repeated `execute`/`review`/`apply-review`/`doc-write` calls on the same repo+branch resume the same underlying child conversation (claude `--resume` / `codex exec resume`). The provider session ids are stored per session under `sessions/<id>/child-sessions.json`, keyed by repo+role+branch (an `execute` without `--branch` keys on the plan path or inline prompt instead). `CEREBRO_CHILD_SESSION_TTL` (seconds, default `86400` = 24h) bounds how long a stored id stays resumable; past it, or if the provider rejects the id, the child re-runs fresh and the store is refreshed.
+Repeated `execute`/`review`/`apply-review`/`doc-write` calls on the same repo+branch resume the same underlying child conversation (claude `--resume` / `codex exec resume`). The provider session ids are stored per session under `sessions/<id>/child-sessions.json`, keyed by repo+role+branch (an `execute` without `--branch` keys on the plan path or inline prompt instead; a `plan` keys on its output name). `plan` persists its id too — not to resume on re-issue, but so a plan that paused with a question can be continued by `cerebro answer`. `CEREBRO_CHILD_SESSION_TTL` (seconds, default `86400` = 24h) bounds how long a stored id stays resumable; past it, or if the provider rejects the id, the child re-runs fresh and the store is refreshed.
 
 The child id is persisted the **instant** the child starts — not when it finishes — and each entry tracks a `running`/`done` status. So if you interrupt the orchestrator while a child agent is running, the work is not lost: the child is left marked `running` (interrupted), and on the next launch/resume the orchestrator runs `cerebro status` — whose "interrupted / in-flight children" section lists every child that was mid-run — and resumes each by re-issuing the same command, continuing the half-done work via `--resume` instead of redoing it. Concurrent `--pair` children write to the store under an `fcntl` lock so their startup ids never clobber each other.
 

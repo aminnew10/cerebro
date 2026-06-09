@@ -107,6 +107,19 @@ elif op == "list-running":
                 e.get("branch") or "", e.get("log") or "",
                 e.get("started_at") or e.get("updated_at") or "",
             ]) + "\n")
+elif op == "match":
+    # match <ttl> <role> <repo> -- TSV(key, id, branch, status, updated_at)
+    # for every still-fresh entry with a stored id that has this role+repo.
+    # Used by `cerebro answer` to locate the session to resume when the
+    # orchestrator does not pass an explicit discriminator.
+    ttl = int(sys.argv[3]); role = sys.argv[4]; repo = sys.argv[5]
+    for key, e in _load(f).items():
+        if (e.get("role") == role and e.get("repo") == repo and e.get("id")
+                and _fresh(e.get("updated_at") or "", ttl)):
+            sys.stdout.write("\t".join([
+                key, e.get("id") or "", e.get("branch") or "",
+                e.get("status") or "", e.get("updated_at") or "",
+            ]) + "\n")
 else:
     sys.exit(2)
 '

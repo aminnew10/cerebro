@@ -52,33 +52,7 @@ cmd_execute() {
 
   local child_log; child_log="$(child_log_path execute)"
 
-  local sys_prompt
-  sys_prompt='You are executing an implementation plan in a git repository.
-Read AGENTS.md at the repo root first (or the bootstrap content in the
-prompt body, if AGENTS.md is missing) and follow it for branch naming,
-commit format, and project-wide guardrails. Before you branch, fetch the
-base branch from the remote (e.g. `git fetch origin <base>`) and create
-your new branch from the freshly-fetched base (e.g. `origin/main`) so you
-always work on the most up-to-date version. Create a new feature branch
-per AGENTS.md conventions. Implement the plan. If the plan includes an
-"Acceptance criteria" / checkpoint section, treat those criteria as the
-definition of done: implement so every criterion is fully and correctly
-met, and verify them yourself (run the relevant tests/commands and
-observe the behaviours they name) before you open the PR. Run the tests,
-type checks, or linters that the repo conventions imply. Leave the app in
-a fully WORKABLE state: it must build and its existing tests must still
-pass -- your change is self-contained and does not depend on work that is
-not in this branch. Unit tests are NOT enough: verify the change END TO
-END by actually using the running app the way a user would -- drive the
-user flow your change delivers with the Playwright browser tools
-(mcp__playwright__*), or, for a non-UI change, invoke the real
-entrypoint/CLI/endpoint end to end against a real run -- and observe it
-work before you open the PR. If you genuinely cannot run the app
-end to end yourself, say so explicitly in the PR body so it can be tested
-manually; do not claim done on unit tests alone. Commit per
-AGENTS.md, push the branch, and open a pull request via the `gh` CLI.
-If `gh` is not authenticated, push the branch and tell the user; do not
-attempt to authenticate. Stop after the PR is open.'
+  local sys_prompt; sys_prompt="$(child_sys_prompt execute)"
 
   # Stacked-branch support. --base pins the branch this PR forks from and
   # targets (so a suite of plans can stack: plan 1 off main, plan 2 off
@@ -129,7 +103,7 @@ attempt to authenticate. Stop after the PR is open.'
   log_event "execute_started" "$source_desc repo=$repo base=${base_branch:-default} branch=${new_branch:-auto} resume=${prior:-none}"
 
   local opts=(-p --permission-mode bypassPermissions
-              --allowedTools "Read Edit Write Bash Grep Glob WebSearch WebFetch mcp__playwright__*"
+              --allowedTools "$(child_allowed_tools execute)"
               --output-format stream-json --verbose
               --append-system-prompt "$sys_prompt")
   [[ -n "$CEREBRO_MODEL" ]] && opts+=(--model "$CEREBRO_MODEL")
@@ -161,8 +135,9 @@ attempt to authenticate. Stop after the PR is open.'
     printf '<plan>\n%s\n</plan>\n' "$plan_body"
   )"
 
-  local rc id_capture
+  local rc id_capture msg_capture
   id_capture="$(mktemp)"
+  msg_capture="$(mktemp)"
   local PAIR_SID="" PAIR_OPTS=() PAIR_FIFO="" PAIR_STEER="" PAIR_IDLE=""
   (( pair )) && pair_begin execute "$repo" "$new_branch" "$child_log" "$prior"
   local run_opts=("${opts[@]}")
@@ -177,7 +152,7 @@ attempt to authenticate. Stop after the PR is open.'
       | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
         "${TIMEOUT_CMD[@]}" claude "${run_opts[@]}" 2>/dev/null \
       | tee "$child_log" \
-      | python3 -c "$PY_PARSE_STREAM" "" "$id_capture" "$store_file" "$ckey" )
+      | python3 -c "$PY_PARSE_STREAM" "$msg_capture" "$id_capture" "$store_file" "$ckey" )
   rc=$?
   pair_cleanup "$pair"
 
@@ -205,13 +180,13 @@ attempt to authenticate. Stop after the PR is open.'
         | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
           "${TIMEOUT_CMD[@]}" claude "${retry_opts[@]}" 2>/dev/null \
         | tee "$child_log" \
-        | python3 -c "$PY_PARSE_STREAM" "" "$id_capture" "$store_file" "$ckey" )
+        | python3 -c "$PY_PARSE_STREAM" "$msg_capture" "$id_capture" "$store_file" "$ckey" )
     rc=$?
     pair_cleanup "$pair"
   fi
 
   if (( rc != 0 )); then
-    rm -f "$id_capture"
+    rm -f "$id_capture" "$msg_capture"
     log_event "execute_failed" "rc=$rc log=$child_log"
     die "execute: child claude failed (rc=$rc); see $child_log"
   fi
@@ -223,6 +198,8 @@ attempt to authenticate. Stop after the PR is open.'
   rm -f "$id_capture"
   log_event "execute_finished" "$child_log"
   pair_report "$pair" "$child_log"
+  surface_child_reply "$msg_capture" execute
+  rm -f "$msg_capture"
   echo "$child_log"
 }
 

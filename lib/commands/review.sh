@@ -337,15 +337,7 @@ cmd_apply_review() {
   local child_log; child_log="$(child_log_path apply-review)"
 
   local sys_prompt
-  sys_prompt='You are doing follow-up work on the current branch of a git
-repository to update an open pull request. Read AGENTS.md at the repo
-root first and follow it for commit format and project guardrails. Do
-NOT modify AGENTS.md or CLAUDE.md. Stay on the current branch -- do
-not create a new one. Apply the work described in the prompt body
-(either reviewer findings the orchestrator scoped, or a direct fix
-instruction). Skip nits and style-only items unless explicitly called
-out. Run the repo'\''s test or type-check command if one is obvious.
-Commit per AGENTS.md and push so the existing PR updates in place.'
+  sys_prompt="$(child_sys_prompt apply-review)"
 
   # Child-session continuity: apply-review stays on the current branch, so we
   # key on repo+role+branch. Repeated apply-reviews on the same PR branch
@@ -370,7 +362,7 @@ Commit per AGENTS.md and push so the existing PR updates in place.'
   fi
 
   local opts=(-p --permission-mode bypassPermissions
-              --allowedTools "Read Edit Write Bash Grep Glob WebSearch WebFetch mcp__playwright__*"
+              --allowedTools "$(child_allowed_tools apply-review)"
               --output-format stream-json --verbose
               --append-system-prompt "$sys_prompt")
   [[ -n "$CEREBRO_MODEL" ]] && opts+=(--model "$CEREBRO_MODEL")
@@ -392,7 +384,7 @@ Commit per AGENTS.md and push so the existing PR updates in place.'
     fi
   )"
 
-  local rc id_capture; id_capture="$(mktemp)"
+  local rc id_capture msg_capture; id_capture="$(mktemp)"; msg_capture="$(mktemp)"
   local run_opts=("${opts[@]}")
   [[ -n "$prior" ]] && run_opts+=(--resume "$prior")
   child_store_begin "$ckey" claude apply-review "$repo" "${ar_branch:-default}" "$child_log"
@@ -401,7 +393,7 @@ Commit per AGENTS.md and push so the existing PR updates in place.'
       | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
         "${TIMEOUT_CMD[@]}" claude "${run_opts[@]}" 2>/dev/null \
       | tee "$child_log" \
-      | python3 -c "$PY_PARSE_STREAM" "" "$id_capture" "$store_file" "$ckey" )
+      | python3 -c "$PY_PARSE_STREAM" "$msg_capture" "$id_capture" "$store_file" "$ckey" )
   rc=$?
   pair_cleanup "$pair"
 
@@ -423,13 +415,13 @@ Commit per AGENTS.md and push so the existing PR updates in place.'
         | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
           "${TIMEOUT_CMD[@]}" claude "${retry_opts[@]}" 2>/dev/null \
         | tee "$child_log" \
-        | python3 -c "$PY_PARSE_STREAM" "" "$id_capture" "$store_file" "$ckey" )
+        | python3 -c "$PY_PARSE_STREAM" "$msg_capture" "$id_capture" "$store_file" "$ckey" )
     rc=$?
     pair_cleanup "$pair"
   fi
 
   if (( rc != 0 )); then
-    rm -f "$id_capture"
+    rm -f "$id_capture" "$msg_capture"
     log_event "apply_review_failed" "rc=$rc log=$child_log"
     die "apply-review: child claude failed (rc=$rc); see $child_log"
   fi
@@ -437,6 +429,8 @@ Commit per AGENTS.md and push so the existing PR updates in place.'
   rm -f "$id_capture"
   log_event "apply_review_finished" "$child_log"
   pair_report "$pair" "$child_log"
+  surface_child_reply "$msg_capture" apply-review
+  rm -f "$msg_capture"
   echo "$child_log"
 }
 

@@ -199,6 +199,12 @@ Notes:
   * No chat/PR/repo-specific flags are ever passed to `claude` or
     `codex`. The orchestrator addresses repos by absolute path as the
     first positional arg to its sub-agent tools.
+  * Paused children. A spawned child (plan / execute / apply-review /
+    doc-write) runs non-interactively and cannot ask questions mid-run.
+    When it hits a genuine blocker it ends with its question as its final
+    message; the orchestrator answers it (from the spec/recall, or by
+    asking you) and resumes the SAME child session with the answer via
+    `cerebro answer`, so the child continues where it paused.
   * Pair programming. Ask the orchestrator to "pair" (or watch / steer)
     a plan, execute, apply-review, or doc-write child and it adds
     `--pair`: the child runs with claude's stream-json input so you can
@@ -287,6 +293,22 @@ ts_compact() { date -u +%Y%m%dT%H%M%SZ; }
 child_log_path() {
   local subcmd="$1"
   printf '%s\n' "$CEREBRO_SESSION_DIR/children/${subcmd}-$(ts_compact)-$$-${RANDOM}.jsonl"
+}
+
+# Surface a child's final message to the orchestrator on stdout. A child runs
+# non-interactively, so when it pauses on a genuine blocker it ends with its
+# QUESTION as its closing message rather than completing the work. The mutating
+# children otherwise discard that text (they push commits, not output), so we
+# capture it and print it under a clear marker. The orchestrator reads this to
+# decide whether the child finished or is waiting on an answer (see the
+# "child stops to ask a question" rule in its system prompt).
+#   $1 = file holding the child's final result text   $2 = role label
+surface_child_reply() {
+  local f="$1" role="$2"
+  [[ -s "$f" ]] || return 0
+  printf -- '----- %s child closing message (read it: a question here means the child PAUSED for an answer) -----\n' "$role"
+  cat "$f"
+  printf -- '\n----- end %s child closing message -----\n' "$role"
 }
 
 # Append a structured event to the active session's transcript.

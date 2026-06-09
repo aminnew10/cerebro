@@ -52,15 +52,7 @@ cmd_doc_write() {
 
   local child_log; child_log="$(child_log_path doc-write)"
 
-  local sys_prompt
-  sys_prompt='You are updating the user-facing documentation in a git repository
-to reflect a change that just shipped. Read AGENTS.md at the repo root
-first and follow it for commit format and project guardrails. Do NOT
-modify AGENTS.md or CLAUDE.md. Stay on the current branch.
-Read the relevant README or docs files first. Update the prose, code
-samples, and command summaries so the docs accurately describe the new
-behaviour. Do not invent features the diff does not contain. Commit
-per AGENTS.md and push so the open PR updates.'
+  local sys_prompt; sys_prompt="$(child_sys_prompt doc-write)"
 
   # Child-session continuity: doc-write stays on the current branch, keyed on
   # repo+role+branch. A doc-write INTERRUPTED mid-run resumes its conversation
@@ -79,7 +71,7 @@ per AGENTS.md and push so the open PR updates.'
   log_event "doc_write_started" "$source_desc resume=${prior:-none}"
 
   local opts=(-p --permission-mode bypassPermissions
-              --allowedTools "Read Edit Write Bash Grep Glob WebSearch WebFetch mcp__playwright__*"
+              --allowedTools "$(child_allowed_tools doc-write)"
               --output-format stream-json --verbose
               --append-system-prompt "$sys_prompt")
   [[ -n "$CEREBRO_MODEL" ]] && opts+=(--model "$CEREBRO_MODEL")
@@ -93,7 +85,7 @@ per AGENTS.md and push so the open PR updates.'
   local child_prompt
   child_prompt="$(printf 'Update the docs to reflect the work described in the plan and the recent commits on this branch. Commit and push on the current branch.\n\n<orchestrator-notes>\n%s\n</orchestrator-notes>\n\n<plan>\n%s\n</plan>\n' "$notes" "$plan_body")"
 
-  local rc id_capture; id_capture="$(mktemp)"
+  local rc id_capture msg_capture; id_capture="$(mktemp)"; msg_capture="$(mktemp)"
   local run_opts=("${opts[@]}")
   [[ -n "$prior" ]] && run_opts+=(--resume "$prior")
   child_store_begin "$ckey" claude doc-write "$repo" "${dw_branch:-default}" "$child_log"
@@ -102,7 +94,7 @@ per AGENTS.md and push so the open PR updates.'
       | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
         "${TIMEOUT_CMD[@]}" claude "${run_opts[@]}" 2>/dev/null \
       | tee "$child_log" \
-      | python3 -c "$PY_PARSE_STREAM" "" "$id_capture" "$store_file" "$ckey" )
+      | python3 -c "$PY_PARSE_STREAM" "$msg_capture" "$id_capture" "$store_file" "$ckey" )
   rc=$?
   pair_cleanup "$pair"
 
@@ -122,13 +114,13 @@ per AGENTS.md and push so the open PR updates.'
         | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
           "${TIMEOUT_CMD[@]}" claude "${retry_opts[@]}" 2>/dev/null \
         | tee "$child_log" \
-        | python3 -c "$PY_PARSE_STREAM" "" "$id_capture" "$store_file" "$ckey" )
+        | python3 -c "$PY_PARSE_STREAM" "$msg_capture" "$id_capture" "$store_file" "$ckey" )
     rc=$?
     pair_cleanup "$pair"
   fi
 
   if (( rc != 0 )); then
-    rm -f "$id_capture"
+    rm -f "$id_capture" "$msg_capture"
     log_event "doc_write_failed" "rc=$rc log=$child_log"
     die "doc-write: child claude failed (rc=$rc); see $child_log"
   fi
@@ -136,6 +128,8 @@ per AGENTS.md and push so the open PR updates.'
   rm -f "$id_capture"
   log_event "doc_write_finished" "$child_log"
   pair_report "$pair" "$child_log"
+  surface_child_reply "$msg_capture" doc-write
+  rm -f "$msg_capture"
   echo "$child_log"
 }
 

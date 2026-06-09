@@ -1642,6 +1642,71 @@ else
   done
 fi
 
+# ========================================================================
+# 150-156. `cerebro answer` -- resume a paused child with an answer.
+# Validation/resolution paths fire before any claude invocation; the
+# stub-backed cases verify the resume actually happens.
+# ========================================================================
+
+# --- 150. validation: empty answer ---
+STDERR_CONTAINS="empty answer" \
+run_case 150 "answer empty-answer rejected" 1 -- "$CEREBRO_BIN" answer "$REPO"
+
+# --- 151. validation: unknown role ---
+STDERR_CONTAINS="unknown role" \
+run_case 151 "answer unknown-role rejected" 1 -- "$CEREBRO_BIN" answer "$REPO" "go" --role bogus
+
+# --- 152. validation: relative repo path ---
+STDERR_CONTAINS="must be absolute" \
+run_case 152 "answer relative-repo rejected" 1 -- "$CEREBRO_BIN" answer relative "go"
+
+# --- 153. no resumable session to answer (auto-match finds nothing) ---
+STDERR_CONTAINS="no resumable execute session" \
+run_case 153 "answer with no stored session" 1 -- "$CEREBRO_BIN" answer "$REPO" "go"
+
+if (( STUB_OK )); then
+  # --- 154. answer auto-matches the single execute session and resumes it ---
+  ANSESS="answer-session"; ANDIR="$CEREBRO_HOME/sessions/$ANSESS"
+  mkdir -p "$ANDIR/children" "$ANDIR/plans"; : > "$ANDIR/transcript.jsonl"
+  # Seed a stored execute session for this repo.
+  env PATH="$ID_STUB_PATH" CEREBRO_SESSION_ID="$ANSESS" \
+    "$CEREBRO_BIN" execute "$REPO" --prompt "do the thing" --branch feat/ans >/dev/null 2>&1
+  ans_out="$(env PATH="$ID_STUB_PATH" CEREBRO_SESSION_ID="$ANSESS" \
+    "$CEREBRO_BIN" answer "$REPO" "use option B" --role execute 2>/dev/null)"
+  if grep -q '"what":"answer_started"' "$ANDIR/transcript.jsonl" \
+     && grep -q 'resume=STUBSESSION-1111' "$ANDIR/transcript.jsonl"; then
+    printf 'PASS  154  answer resumes the stored execute session\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  154  answer did not resume [transcript=%s]\n' "$(cat "$ANDIR/transcript.jsonl")"; fail=$((fail + 1))
+    failures+=("154 answer resume")
+  fi
+
+  # --- 155. answer surfaces the child's closing message on stdout ---
+  if [[ "$ans_out" == *"child closing message"* && "$ans_out" == *"ok"* ]]; then
+    printf 'PASS  155  answer surfaces the child closing message\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  155  answer did not surface closing message [out=%s]\n' "$ans_out"; fail=$((fail + 1))
+    failures+=("155 answer surface :: out=$ans_out")
+  fi
+
+  # --- 156. answer --role plan rewrites the plan file and echoes its path ---
+  plan_path="$(env PATH="$ID_STUB_PATH" CEREBRO_SESSION_ID="$ANSESS" \
+    "$CEREBRO_BIN" plan "$REPO" "design the thing" 2>/dev/null)"
+  pout="$(env PATH="$ID_STUB_PATH" CEREBRO_SESSION_ID="$ANSESS" \
+    "$CEREBRO_BIN" answer "$REPO" "yes, go with it" --role plan --out "$(basename "${plan_path%.md}")" 2>/dev/null)"
+  if [[ "$pout" == "$plan_path" && -s "$plan_path" ]] \
+     && grep -q 'role=plan' "$ANDIR/transcript.jsonl"; then
+    printf 'PASS  156  answer --role plan rewrites and echoes the plan file\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  156  answer plan path mismatch [plan=%s out=%s]\n' "$plan_path" "$pout"; fail=$((fail + 1))
+    failures+=("156 answer plan :: plan=$plan_path out=$pout")
+  fi
+else
+  for t in 154 155 156; do
+    printf 'SKIP  %s  answer resume (claude stub unavailable)\n' "$t"
+  done
+fi
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 if (( fail > 0 )); then
   printf '\nFailures:\n'
