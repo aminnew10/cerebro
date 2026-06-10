@@ -152,7 +152,7 @@ cmd_execute() {
       | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
         "${TIMEOUT_CMD[@]}" claude "${run_opts[@]}" 2>/dev/null \
       | tee "$child_log" \
-      | python3 -c "$PY_PARSE_STREAM" "$msg_capture" "$id_capture" "$store_file" "$ckey" )
+      | python3 "$CEREBRO_LIB_DIR/python/parse_stream.py" "$msg_capture" "$id_capture" "$store_file" "$ckey" )
   rc=$?
   pair_cleanup "$pair"
 
@@ -180,7 +180,7 @@ cmd_execute() {
         | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
           "${TIMEOUT_CMD[@]}" claude "${retry_opts[@]}" 2>/dev/null \
         | tee "$child_log" \
-        | python3 -c "$PY_PARSE_STREAM" "$msg_capture" "$id_capture" "$store_file" "$ckey" )
+        | python3 "$CEREBRO_LIB_DIR/python/parse_stream.py" "$msg_capture" "$id_capture" "$store_file" "$ckey" )
     rc=$?
     pair_cleanup "$pair"
   fi
@@ -192,7 +192,7 @@ cmd_execute() {
   fi
 
   # The child's provider id was already persisted at startup (see
-  # PY_PARSE_STREAM); just mark this line of work cleanly finished so it no
+  # parse_stream.py); just mark this line of work cleanly finished so it no
   # longer shows up as interrupted in `cerebro status`.
   child_store_done "$ckey"
   rm -f "$id_capture"

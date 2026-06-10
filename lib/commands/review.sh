@@ -171,13 +171,13 @@ $criteria_block
     run_args=("${codex_opts[@]}" "$codex_prompt")
   fi
   # Mark the review in-flight (preserving any prior thread we are resuming)
-  # before it launches; PY_CODEX_CAPTURE tees the stream to json_path AND
+  # before it launches; codex_capture.py tees the stream to json_path AND
   # persists the thread_id the instant codex emits it, so an interrupt mid
   # run leaves a resumable record.
   child_store_begin "$ckey" codex review "$repo" "${review_branch:-auto}" "$out_path"
   env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
     "${TIMEOUT_CMD[@]}" "$CEREBRO_CODEX_CMD" "${run_args[@]}" 2> "$err_path" \
-    | python3 -c "$PY_CODEX_CAPTURE" "$json_path" "$store_file" "$ckey"
+    | python3 "$CEREBRO_LIB_DIR/python/codex_capture.py" "$json_path" "$store_file" "$ckey"
   rc=${PIPESTATUS[0]}
 
   # Stale fallback: a resume can be rejected up front because codex GC'd or no
@@ -192,7 +192,7 @@ $criteria_block
     : > "$json_path"
     env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
       "${TIMEOUT_CMD[@]}" "$CEREBRO_CODEX_CMD" "${codex_opts[@]}" "$codex_prompt" 2> "$err_path" \
-      | python3 -c "$PY_CODEX_CAPTURE" "$json_path" "$store_file" "$ckey"
+      | python3 "$CEREBRO_LIB_DIR/python/codex_capture.py" "$json_path" "$store_file" "$ckey"
     rc=${PIPESTATUS[0]}
   fi
 
@@ -208,7 +208,7 @@ $criteria_block
     die "review: codex run failed; not echoing a findings path"
   fi
 
-  # The codex thread id was already persisted when PY_CODEX_CAPTURE saw the
+  # The codex thread id was already persisted when codex_capture.py saw the
   # first 'thread.started' event (so an interrupted review stays resumable);
   # just mark this review cleanly finished.
   child_store_done "$ckey"
@@ -393,7 +393,7 @@ cmd_apply_review() {
       | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
         "${TIMEOUT_CMD[@]}" claude "${run_opts[@]}" 2>/dev/null \
       | tee "$child_log" \
-      | python3 -c "$PY_PARSE_STREAM" "$msg_capture" "$id_capture" "$store_file" "$ckey" )
+      | python3 "$CEREBRO_LIB_DIR/python/parse_stream.py" "$msg_capture" "$id_capture" "$store_file" "$ckey" )
   rc=$?
   pair_cleanup "$pair"
 
@@ -415,7 +415,7 @@ cmd_apply_review() {
         | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
           "${TIMEOUT_CMD[@]}" claude "${retry_opts[@]}" 2>/dev/null \
         | tee "$child_log" \
-        | python3 -c "$PY_PARSE_STREAM" "$msg_capture" "$id_capture" "$store_file" "$ckey" )
+        | python3 "$CEREBRO_LIB_DIR/python/parse_stream.py" "$msg_capture" "$id_capture" "$store_file" "$ckey" )
     rc=$?
     pair_cleanup "$pair"
   fi

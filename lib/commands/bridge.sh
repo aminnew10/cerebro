@@ -40,14 +40,7 @@ cmd_ls() {
   [[ -d "$target" ]] || missing_target "$strict" "(not found: ${path:-$repo})" "ls: not a directory: ${path:-$repo}"
 
   log_event "ls" "$target"
-  python3 - "$target" <<'PY'
-import os, sys
-root = sys.argv[1]
-for name in sorted(os.listdir(root)):
-    full = os.path.join(root, name)
-    suffix = "/" if os.path.isdir(full) and not os.path.islink(full) else ""
-    print(name + suffix)
-PY
+  python3 "$CEREBRO_LIB_DIR/python/list_dir.py" "$target"
 }
 
 # ----- subcommand: cerebro read <repo> <path> [--range N:M] ----------------
@@ -187,20 +180,7 @@ cmd_read() {
     cat -- "$resolved"
     return
   fi
-  python3 - "$resolved" "$range" <<'PY'
-import sys
-path, rng = sys.argv[1], sys.argv[2]
-lo, _, hi = rng.partition(":")
-lo = int(lo) if lo else 1
-hi = int(hi) if hi else None
-with open(path) as f:
-    for i, line in enumerate(f, 1):
-        if i < lo:
-            continue
-        if hi is not None and i > hi:
-            break
-        sys.stdout.write(line)
-PY
+  python3 "$CEREBRO_LIB_DIR/python/read_range.py" "$resolved" "$range"
 }
 
 # ----- subcommand: cerebro grep <repo> <pattern> [opts] --------------------

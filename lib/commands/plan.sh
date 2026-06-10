@@ -73,7 +73,7 @@ $desc
       | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
         "${TIMEOUT_CMD[@]}" claude "${opts[@]}" 2>/dev/null \
       | tee "$child_log" \
-      | python3 -c "$PY_PARSE_STREAM" "$out_path" "" "$store_file" "$ckey" )
+      | python3 "$CEREBRO_LIB_DIR/python/parse_stream.py" "$out_path" "" "$store_file" "$ckey" )
   rc=$?
   pair_cleanup "$pair"
 

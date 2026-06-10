@@ -12,7 +12,9 @@
 # This file is a thin entry point: it resolves its own location (even
 # when invoked through a symlink on PATH), sources the modular library
 # under ../lib, then dispatches. The implementation lives in lib/*.sh and
-# lib/commands/*.sh -- see README.md for the module map.
+# lib/commands/*.sh, with the python helpers under lib/python/ and the
+# embedded-file payloads under lib/payloads/ -- see docs/ARCHITECTURE.md
+# for the module map.
 #
 # Top-level invocations the user types at a shell:
 #   cerebro                       # mint a new session, drop into the chat
@@ -55,7 +57,6 @@ unset _cerebro_src _cerebro_dir _cerebro_bin_dir
 . "$CEREBRO_LIB_DIR/helpers.sh"
 . "$CEREBRO_LIB_DIR/payloads.sh"
 . "$CEREBRO_LIB_DIR/session-store.sh"
-. "$CEREBRO_LIB_DIR/python.sh"
 . "$CEREBRO_LIB_DIR/pair.sh"
 for _cerebro_cmd in "$CEREBRO_LIB_DIR"/commands/*.sh; do
   . "$_cerebro_cmd"

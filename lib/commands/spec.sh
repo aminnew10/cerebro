@@ -76,24 +76,6 @@ spec_history() {
     echo "cerebro: no session spec history yet ($hf)"
     return 0
   fi
-  python3 - "$hf" <<'PY'
-import json, sys
-path = sys.argv[1]
-n = 0
-with open(path) as fh:
-    for line in fh:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rec = json.loads(line)
-        except Exception:
-            continue
-        n += 1
-        print(f"=== version {n}  [{rec.get('ts', '?')}] ===")
-        print(rec.get("text", ""))
-        print()
-print(f"--- {n} version(s) total ---")
-PY
+  python3 "$CEREBRO_LIB_DIR/python/spec_history.py" "$hf"
 }
 

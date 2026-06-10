@@ -46,19 +46,7 @@ contains() {
 # the repo. Echoes the absolute resolved path on stdout. Exits 6 if the path
 # escapes. Uses python3 for cross-platform realpath (macOS lacks GNU realpath).
 resolve_in_repo() {
-  local repo="$1" rel="$2"
-  python3 - "$repo" "$rel" <<'PY'
-import os, sys
-repo = os.path.realpath(sys.argv[1])
-cand = sys.argv[2]
-if not os.path.isabs(cand):
-    cand = os.path.join(repo, cand)
-cand = os.path.realpath(cand)
-if cand != repo and not cand.startswith(repo + os.sep):
-    sys.stderr.write(f"cerebro: error: path escapes repo: {sys.argv[2]}\n")
-    sys.exit(6)
-print(cand)
-PY
+  python3 "$CEREBRO_LIB_DIR/python/resolve_in_repo.py" "$1" "$2"
 }
 
 # Validate that $1 is an absolute path to a git repo. Exits 3 on any failure.
@@ -103,21 +91,7 @@ repo_state_key() {
 find_enclosing_worktree() {
   local p="$1"
   [[ "$p" = /* ]] || return 1
-  python3 - "$p" <<'PY' 2>/dev/null
-import os, sys
-p = os.path.realpath(sys.argv[1])
-if os.path.isfile(p):
-    p = os.path.dirname(p)
-for _ in range(12):
-    if os.path.exists(os.path.join(p, ".git")):
-        print(p)
-        sys.exit(0)
-    parent = os.path.dirname(p)
-    if parent == p:
-        sys.exit(1)
-    p = parent
-sys.exit(1)
-PY
+  python3 "$CEREBRO_LIB_DIR/python/find_enclosing_worktree.py" "$p" 2>/dev/null
 }
 
 # Resolve $1 (an absolute path) for a bare-abs read/grep/ls invocation.
@@ -130,31 +104,7 @@ PY
 # resolve_in_repo() does NOT apply -- this branch deliberately reads
 # outside any repo.
 resolve_bare_abs() {
-  python3 - "$1" <<'PY'
-import os, stat, sys
-p = sys.argv[1]
-if not os.path.isabs(p):
-    sys.stderr.write(f"cerebro: error: path must be absolute: {p}\n")
-    sys.exit(3)
-try:
-    r = os.path.realpath(p)
-    st = os.stat(r)
-except OSError as e:
-    # Benign-eligible "missing" -- distinct sentinel so bridges can route
-    # only this case through missing_target (security stays hard).
-    sys.stderr.write(f"cerebro: error: cannot stat {p}: {e}\n")
-    sys.exit(7)
-for special in ("/dev/", "/proc/", "/sys/"):
-    if r == special.rstrip("/") or r.startswith(special):
-        sys.stderr.write(f"cerebro: error: refusing to read special path: {r}\n")
-        sys.exit(6)
-m = st.st_mode
-if not (stat.S_ISREG(m) or stat.S_ISDIR(m)):
-    # Benign-eligible "wrong type".
-    sys.stderr.write(f"cerebro: error: not a regular file or directory: {r}\n")
-    sys.exit(7)
-print(r)
-PY
+  python3 "$CEREBRO_LIB_DIR/python/resolve_bare_abs.py" "$1"
 }
 
 # Map common short rg --type aliases to the canonical rg type name. Unknown
@@ -344,9 +294,10 @@ build_timeout_cmd() {
   fi
 }
 
-# Write the embedded payloads (hook.sh, system-prompt.md, settings.local.json)
-# into $CEREBRO_HOME. Idempotent: existing files are overwritten only if their
-# content differs, so subsequent runs see an up-to-date copy without churn.
+# Write the payloads (hook.sh, system-prompt.md, settings.local.json) from
+# lib/payloads/ into $CEREBRO_HOME. Idempotent: existing files are overwritten
+# only if their content differs, so subsequent runs see an up-to-date copy
+# without churn.
 materialise_home() {
   mkdir -p "$CEREBRO_HOME/.claude" "$CEREBRO_HOME/sessions" \
     "$CEREBRO_HOME/templates" \

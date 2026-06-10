@@ -34,9 +34,12 @@ the entry point.
 bin/cerebro            # entry point: locate lib, source modules, dispatch
 lib/config.sh          # shell options + CEREBRO_* env defaults (sourced first)
 lib/helpers.sh         # say/warn/die, exit-code helpers, path + repo resolution, usage
-lib/payloads.sh        # embedded hook, settings.json, system prompt, templates
+lib/payloads.sh        # thin loaders for the payload files under lib/payloads/
+lib/payloads/          # hook script, settings.json template, system prompt,
+                       #   child role prompts, default AGENTS.md / CLAUDE.md
 lib/session-store.sh   # session metadata + child-agent session store
-lib/python.sh          # inline python helpers (child-session persistence, stream parsing)
+lib/python/            # python helpers (child-session store, stream parsing,
+                       #   pair/observe/steer pumps, path resolution)
 lib/pair.sh            # pair-programming mode (watch + steer a live child)
 lib/commands/*.sh      # one file per subcommand group (plan, execute, review, ...)
 lib/main.sh            # dispatch table mapping argv[0] to a cmd_* function
@@ -47,7 +50,11 @@ Keep modules cohesive: a new subcommand goes in `lib/commands/`, gets a
 `cmd_<name>` function, and a route in `lib/main.sh`. Only `config.sh`
 runs ordering-sensitive top-level code (it sets shell options); every
 other module is function and string definitions, so load order among
-them does not matter. Run `bash tests/run.sh` before proposing changes.
+them does not matter. Non-shell content stays out of shell strings:
+multi-line python belongs in `lib/python/` (invoked as `python3
+"$CEREBRO_LIB_DIR/python/<name>.py"`; shell one-liners are fine
+inline), and prompts/templates/config payloads belong in
+`lib/payloads/`. Run `bash tests/run.sh` before proposing changes.
 
 ## Rules (apply to every repository)
 

@@ -86,11 +86,11 @@ prompt text; the harness physically lacks the tools.
 *Consequence:* most cerebro "features" — the plan-first default, the
 blast-radius audit, multi-plan suites, the spec discipline, the
 preference-learning loop — are **policies encoded in the system
-prompt**, not code paths. The authoritative copy is the
-`cerebro_system_prompt()` heredoc in `lib/payloads.sh`; it is
-materialised to `~/.cerebro/system-prompt.md` on every launch (see
-decision 7). Changing orchestrator behaviour usually means editing that
-prompt, not a shell function.
+prompt**, not code paths. The authoritative copy lives at
+`lib/payloads/system-prompt.md`; it is materialised to
+`~/.cerebro/system-prompt.md` on every launch (see decision 7).
+Changing orchestrator behaviour usually means editing that prompt, not
+a shell function.
 
 ### 2. Capability confinement by role (least privilege per process)
 
@@ -132,8 +132,8 @@ There is no database and no in-memory state that matters. The layout:
 
 ```
 ~/.cerebro/
-  system-prompt.md                 # regenerated from lib/payloads.sh
-  hook.sh                          # UserPromptSubmit hook (also embedded)
+  system-prompt.md                 # copied from lib/payloads/system-prompt.md
+  hook.sh                          # UserPromptSubmit hook (from lib/payloads/)
   .claude/settings.local.json      # registers the hook
   learnings.md                     # confirmed preferences (→ system prompt)
   pending-learnings.md             # append-only preference signals
@@ -206,7 +206,7 @@ pausing a first-class protocol:
 * Every child's system prompt ends with a shared note
   (`child_noninteractive_note()`): on a genuine blocker, stop and make
   your *final message* the question.
-* The harness captures that final message (`PY_PARSE_STREAM` writes the
+* The harness captures that final message (`parse_stream.py` writes the
   `result` event text) and surfaces it under a
   `----- <role> child closing message -----` banner
   (`surface_child_reply()`), or, for `plan`, the question simply lands
@@ -231,8 +231,8 @@ started_at, updated_at}`.
 Two timing decisions make interruption safe:
 
 * `child_store_begin` marks the entry `status=running` *before* the
-  child launches, and the stream parsers (`PY_PARSE_STREAM` for claude,
-  `PY_CODEX_CAPTURE` for codex) persist the provider conversation id
+  child launches, and the stream parsers (`parse_stream.py` for claude,
+  `codex_capture.py` for codex) persist the provider conversation id
   the *instant* it appears in the stream (claude's `init` event,
   codex's `thread.started`). Killing the orchestrator mid-run therefore
   always leaves a discoverable, resumable record. `cerebro status`
@@ -251,16 +251,19 @@ re-run of a mutating role would duplicate half-applied work. TTL
 is trusted at all.
 
 All store access goes through one python entry point
-(`PY_CHILD_STORE`) that takes an exclusive `fcntl` flock on a sidecar
+(`lib/python/child_store.py`) that takes an exclusive `fcntl` flock on a sidecar
 `.lock` and rewrites the JSON atomically (`mkstemp` + `os.replace`), so
 concurrent `--pair` children persisting their ids at startup cannot
 clobber each other.
 
-### 7. Payloads are embedded and materialised, not packaged
+### 7. Payloads are versioned files, materialised at launch
 
-The hook script, settings.json, orchestrator system prompt, and
-template AGENTS.md/CLAUDE.md are heredocs in `lib/payloads.sh`,
-written into `$CEREBRO_HOME` on every launch by `materialise_home()`:
+The hook script, settings.json template, orchestrator system prompt,
+child role prompts, and template AGENTS.md/CLAUDE.md live as real files
+under `lib/payloads/`, loaded by the thin reader functions in
+`lib/payloads.sh` (resolved through `CEREBRO_LIB_DIR`, so they ride
+along with the clone). The home-resident ones are written into
+`$CEREBRO_HOME` on every launch by `materialise_home()`:
 
 * `system-prompt.md`, `hook.sh`, `settings.local.json` are
   `write_if_changed` — the repo is the source of truth; a `git pull`
@@ -280,7 +283,7 @@ Every claude child runs inside one pipeline:
 ```
 prompt → [pair pump] → claude -p --output-format stream-json
        → tee children/<log>.jsonl
-       → PY_PARSE_STREAM  (progress lines on stderr,
+       → parse_stream.py  (progress lines on stderr,
                            final message + session id captured,
                            id persisted to the store mid-stream)
 ```
@@ -294,7 +297,7 @@ non-`success` result so failures propagate as exit codes.
 
 `review` is the same shape with codex: `--json` events on stdout (the
 only place the resumable `thread_id` appears) are teed and scanned by
-`PY_CODEX_CAPTURE`, while `-o` writes the human-readable findings file.
+`codex_capture.py`, while `-o` writes the human-readable findings file.
 On failure the findings path is **not** echoed — the orchestrator must
 never feed a failed review's stderr to `apply-review` as findings.
 
@@ -302,7 +305,7 @@ never feed a failed review's stderr to `apply-review` as findings.
 
 Pair mode (`--pair` on plan/execute/apply-review/doc-write) swaps the
 child's plain-text stdin for claude's `--input-format stream-json` and
-inserts an input pump (`PY_PAIR_PUMP` in `lib/pair.sh`):
+inserts an input pump (`lib/python/pair_pump.py`):
 
 * The pump emits the task as the first user message, then watches the
   child's log for each turn-ending `result` event.
@@ -363,14 +366,18 @@ mode, and `resolve_bare_abs` distinguishes the benign case with a
 dedicated exit 7 sentinel so callers cannot accidentally soften a
 refusal. The `git`/`gh` bridges keep ordinary error propagation.
 
-### 12. Bash + inline Python, sourced modules, thin entry point
+### 12. Bash + Python helpers, sourced modules, thin entry point
 
 The CLI is Bash because it is glue: argument shapes, pipelines, exec.
 Anything needing real data structures — JSON stores, stream parsing,
-locking, path canonicalisation — is inline Python 3 (`lib/python.sh`),
-chosen over jq-only because the store needs flock + atomic rename and
-the parsers need stateful line-by-line logic. `jq` handles the simple
-JSON one-liners.
+locking, path canonicalisation — is Python 3, kept as real files under
+`lib/python/` and invoked by absolute path (`python3
+"$CEREBRO_LIB_DIR/python/<name>.py"`), chosen over jq-only because the
+store needs flock + atomic rename and the parsers need stateful
+line-by-line logic. Only genuine one-liners stay inline in the shell;
+`jq` handles the simple JSON one-liners. The store-backed scripts
+import `child_store_lib.py` (with `sys.dont_write_bytecode` set first,
+so no `__pycache__` lands in the source tree).
 
 `bin/cerebro` resolves its own symlink chain by hand (macOS has no
 `readlink -f`), sources `lib/config.sh` first (the only
@@ -456,11 +463,15 @@ bin/cerebro            # entry point: resolve symlink, source lib, main "$@"
 lib/config.sh          # set -uo pipefail + CEREBRO_* defaults (sourced first)
 lib/helpers.sh         # say/warn/die, exit-code helpers, path/repo resolution,
                        # interactive guard, timeout chain, home materialiser
-lib/payloads.sh        # embedded hook / settings / system prompt / child role
-                       # prompts + tool lists / template AGENTS.md, CLAUDE.md
+lib/payloads.sh        # thin loaders for the files under lib/payloads/
+lib/payloads/          # hook.sh, settings.json template, system-prompt.md,
+                       # prompts/<role>.md + noninteractive note,
+                       # templates/AGENTS.md, CLAUDE.md
 lib/session-store.sh   # session metadata + child-sessions.json wrappers
-lib/python.sh          # PY_CHILD_STORE (locked JSON store), PY_PARSE_STREAM
-                       # (claude stream), PY_CODEX_CAPTURE (codex stream)
+lib/python/            # child_store(_lib).py (locked JSON store),
+                       # parse_stream.py (claude stream), codex_capture.py
+                       # (codex stream), pair_pump.py / observe_pump.py /
+                       # steer_send.py, path-resolution + listing helpers
 lib/pair.sh            # pair mode: banner, FIFO lifecycle, input pump, report
 lib/commands/*.sh      # one file per subcommand group; each defines cmd_*
 lib/main.sh            # dispatch table argv → cmd_*
@@ -470,7 +481,7 @@ tests/run.sh           # plain-bash suite (bridges, spec/learn/session store)
 ```
 
 Exit-code contract, tool catalogues, and orchestrator policy all live
-in the `cerebro_system_prompt()` heredoc in `lib/payloads.sh` — when
+in `lib/payloads/system-prompt.md` — when
 behaviour and prompt must agree (e.g. bridge exit codes), the prompt is
 the documented contract and the code must match it.
 

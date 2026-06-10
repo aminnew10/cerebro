@@ -42,9 +42,10 @@ child_key() {
 
 # child_store <op> [args...] -- the single entry point for every mutation
 # and query of child-sessions.json. All access goes through one fcntl-locked
-# python process (PY_CHILD_STORE) so concurrent --pair children that each
-# persist their own id at startup cannot clobber the whole-file rewrite.
-child_store() { python3 -c "$PY_CHILD_STORE" "$(child_sessions_file)" "$@"; }
+# python process (lib/python/child_store.py) so concurrent --pair children
+# that each persist their own id at startup cannot clobber the whole-file
+# rewrite.
+child_store() { python3 "$CEREBRO_LIB_DIR/python/child_store.py" "$(child_sessions_file)" "$@"; }
 
 # child_session_get <key> -- echo the stored provider id for <key>, or
 # nothing when the file or entry is absent.
