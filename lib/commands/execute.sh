@@ -138,52 +138,65 @@ cmd_execute() {
   local rc id_capture msg_capture
   id_capture="$(mktemp)"
   msg_capture="$(mktemp)"
-  local PAIR_SID="" PAIR_OPTS=() PAIR_FIFO="" PAIR_STEER="" PAIR_IDLE=""
+  local PAIR_SID="" PAIR_OPTS=() PAIR_FIFO="" PAIR_STEER="" PAIR_IDLE="" \
+        PAIR_PGID="" PAIR_STALL="" PAIR_STALL_BUSY="" PAIR_LAUNCH=()
   (( pair )) && pair_begin execute "$repo" "$new_branch" "$child_log" "$prior"
-  local run_opts=("${opts[@]}")
-  [[ -n "$prior" ]] && run_opts+=(--resume "$prior")
-  (( pair )) && run_opts+=("${PAIR_OPTS[@]}")
 
-  # Mark the child in-flight (preserving any prior id we are resuming) BEFORE
-  # it launches, so an interrupt now leaves a resumable record.
-  child_store_begin "$ckey" claude execute "$repo" "${new_branch:-auto}" "$child_log"
-  ( cd "$repo" && printf '%s' "$child_prompt" \
-      | pair_feed "$pair" "$PAIR_FIFO" "$PAIR_STEER" "$child_log" "$PAIR_IDLE" \
-      | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
-        "${TIMEOUT_CMD[@]}" claude "${run_opts[@]}" 2>/dev/null \
-      | tee "$child_log" \
-      | python3 "$CEREBRO_LIB_DIR/python/parse_stream.py" "$msg_capture" "$id_capture" "$store_file" "$ckey" )
-  rc=$?
-  pair_cleanup "$pair"
+  local stall_n=0
+  while :; do
+    local run_opts=("${opts[@]}")
+    [[ -n "$prior" ]] && run_opts+=(--resume "$prior")
+    (( pair )) && run_opts+=("${PAIR_OPTS[@]}")
 
-  # Stale fallback: a resume can be rejected up front because the provider
-  # GC'd or no longer recognizes the stored conversation. Retry once fresh
-  # (no --resume) ONLY when the resumed run did no work before failing -- i.e.
-  # it never emitted a session/init event, so id_capture stays empty and
-  # nothing was committed or edited. If the resumed child DID start a session
-  # (id_capture is non-empty) and then failed, we must NOT re-run fresh: this
-  # is a mutating phase, so a fresh re-run would duplicate or partially redo
-  # work already done. Such a failure is fatal and is handled below like any
-  # other child failure.
-  if (( rc != 0 )) && [[ -n "$prior" ]] && [[ ! -s "$id_capture" ]]; then
-    log_event "execute_resume_failed" "rc=$rc resume=$prior; retrying fresh"
-    warn "execute: resume of $prior failed (rc=$rc); retrying without resume"
-    : > "$id_capture"
-    local retry_opts=("${opts[@]}")
-    # The rejected resume's session id is dead; pair the retry on a fresh one.
-    if (( pair )); then
-      pair_begin execute "$repo" "$new_branch" "$child_log" ""
-      retry_opts+=("${PAIR_OPTS[@]}")
-    fi
+    # Mark the child in-flight (preserving any prior id we are resuming) BEFORE
+    # it launches, so an interrupt now leaves a resumable record.
+    child_store_begin "$ckey" claude execute "$repo" "${new_branch:-auto}" "$child_log"
     ( cd "$repo" && printf '%s' "$child_prompt" \
-        | pair_feed "$pair" "$PAIR_FIFO" "$PAIR_STEER" "$child_log" "$PAIR_IDLE" \
+        | pair_feed "$pair" "$PAIR_FIFO" "$PAIR_STEER" "$child_log" "$PAIR_IDLE" "$PAIR_PGID" "$PAIR_STALL" "$PAIR_STALL_BUSY" \
         | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
-          "${TIMEOUT_CMD[@]}" claude "${retry_opts[@]}" 2>/dev/null \
+          ${PAIR_LAUNCH[@]+"${PAIR_LAUNCH[@]}"} "${TIMEOUT_CMD[@]}" claude "${run_opts[@]}" 2>/dev/null \
         | tee "$child_log" \
         | python3 "$CEREBRO_LIB_DIR/python/parse_stream.py" "$msg_capture" "$id_capture" "$store_file" "$ckey" )
     rc=$?
     pair_cleanup "$pair"
-  fi
+
+    # Stale fallback: retry fresh only when the resumed run never started and
+    # this was not a stall. A stall is handled by the outer resume loop.
+    if (( rc != 0 )) && ! pair_stalled "$child_log" && [[ -n "$prior" ]] && [[ ! -s "$id_capture" ]]; then
+      log_event "execute_resume_failed" "rc=$rc resume=$prior; retrying fresh"
+      warn "execute: resume of $prior failed (rc=$rc); retrying without resume"
+      : > "$id_capture"
+      local retry_opts=("${opts[@]}")
+      if (( pair )); then
+        pair_begin execute "$repo" "$new_branch" "$child_log" ""
+        retry_opts+=("${PAIR_OPTS[@]}")
+      fi
+      ( cd "$repo" && printf '%s' "$child_prompt" \
+          | pair_feed "$pair" "$PAIR_FIFO" "$PAIR_STEER" "$child_log" "$PAIR_IDLE" "$PAIR_PGID" "$PAIR_STALL" "$PAIR_STALL_BUSY" \
+          | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
+            ${PAIR_LAUNCH[@]+"${PAIR_LAUNCH[@]}"} "${TIMEOUT_CMD[@]}" claude "${retry_opts[@]}" 2>/dev/null \
+          | tee "$child_log" \
+          | python3 "$CEREBRO_LIB_DIR/python/parse_stream.py" "$msg_capture" "$id_capture" "$store_file" "$ckey" )
+      rc=$?
+      pair_cleanup "$pair"
+    fi
+
+    if (( pair )) && pair_stalled "$child_log"; then
+      if (( stall_n < ${CEREBRO_PAIR_STALL_RETRIES:-2} )); then
+        stall_n=$((stall_n + 1))
+        pair_stall_backoff "$stall_n"
+        pair_stall_clear "$child_log"
+        pair_begin execute "$repo" "$new_branch" "$child_log" "$PAIR_SID"
+        prior="$PAIR_SID"
+        continue
+      fi
+      pair_stall_clear "$child_log"
+      log_event "pair_stall_giveup" "after=$stall_n stalls log=$child_log resume=$PAIR_SID"
+      rm -f "$id_capture" "$msg_capture"
+      die "execute: paired child stalled $stall_n time(s) and was not restarted further; it remains resumable (id $PAIR_SID) -- see $child_log"
+    fi
+    break
+  done
 
   if (( rc != 0 )); then
     rm -f "$id_capture" "$msg_capture"
@@ -202,4 +215,3 @@ cmd_execute() {
   rm -f "$msg_capture"
   echo "$child_log"
 }
-

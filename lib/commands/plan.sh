@@ -52,11 +52,9 @@ cmd_plan() {
               --append-system-prompt "$sys_prompt")
   [[ -n "$CEREBRO_MODEL" ]] && opts+=(--model "$CEREBRO_MODEL")
 
-  local PAIR_SID="" PAIR_OPTS=() PAIR_FIFO="" PAIR_STEER="" PAIR_IDLE=""
-  if (( pair )); then
-    pair_begin plan "$repo" "" "$child_log"
-    opts+=("${PAIR_OPTS[@]}")
-  fi
+  local PAIR_SID="" PAIR_OPTS=() PAIR_FIFO="" PAIR_STEER="" PAIR_IDLE="" \
+        PAIR_PGID="" PAIR_STALL="" PAIR_STALL_BUSY="" PAIR_LAUNCH=()
+  (( pair )) && pair_begin plan "$repo" "" "$child_log"
 
   local prompt
   prompt="Write an implementation plan for the following request, exploring this repository with your read tools as needed.
@@ -65,17 +63,37 @@ cmd_plan() {
 $desc
 </request>"
 
-  local rc
-  child_store_begin "$ckey" claude plan "$repo" "$out_name" "$child_log"
-  ( cd "$repo" && \
-    printf '%s' "$prompt" \
-      | pair_feed "$pair" "$PAIR_FIFO" "$PAIR_STEER" "$child_log" "$PAIR_IDLE" \
-      | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
-        "${TIMEOUT_CMD[@]}" claude "${opts[@]}" 2>/dev/null \
-      | tee "$child_log" \
-      | python3 "$CEREBRO_LIB_DIR/python/parse_stream.py" "$out_path" "" "$store_file" "$ckey" )
-  rc=$?
-  pair_cleanup "$pair"
+  local rc prior="" stall_n=0
+  while :; do
+    local run_opts=("${opts[@]}")
+    [[ -n "$prior" ]] && run_opts+=(--resume "$prior")
+    (( pair )) && run_opts+=("${PAIR_OPTS[@]}")
+    child_store_begin "$ckey" claude plan "$repo" "$out_name" "$child_log"
+    ( cd "$repo" && \
+      printf '%s' "$prompt" \
+        | pair_feed "$pair" "$PAIR_FIFO" "$PAIR_STEER" "$child_log" "$PAIR_IDLE" "$PAIR_PGID" "$PAIR_STALL" "$PAIR_STALL_BUSY" \
+        | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
+          ${PAIR_LAUNCH[@]+"${PAIR_LAUNCH[@]}"} "${TIMEOUT_CMD[@]}" claude "${run_opts[@]}" 2>/dev/null \
+        | tee "$child_log" \
+        | python3 "$CEREBRO_LIB_DIR/python/parse_stream.py" "$out_path" "" "$store_file" "$ckey" )
+    rc=$?
+    pair_cleanup "$pair"
+
+    if (( pair )) && pair_stalled "$child_log"; then
+      if (( stall_n < ${CEREBRO_PAIR_STALL_RETRIES:-2} )); then
+        stall_n=$((stall_n + 1))
+        pair_stall_backoff "$stall_n"
+        pair_stall_clear "$child_log"
+        pair_begin plan "$repo" "" "$child_log" "$PAIR_SID"
+        prior="$PAIR_SID"
+        continue
+      fi
+      pair_stall_clear "$child_log"
+      log_event "pair_stall_giveup" "after=$stall_n stalls log=$child_log resume=$PAIR_SID"
+      die "plan: paired child stalled $stall_n time(s) and was not restarted further; it remains resumable (id $PAIR_SID) -- see $child_log"
+    fi
+    break
+  done
 
   if (( rc != 0 )); then
     log_event "plan_failed" "rc=$rc"
@@ -106,4 +124,3 @@ cmd_plans() {
     printf '%s  %s\n' "$mtime" "$f"
   done < <(find "$plans_dir" -maxdepth 1 -type f -name '*.md' | sort)
 }
-

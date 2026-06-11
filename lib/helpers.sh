@@ -166,16 +166,20 @@ Notes:
     banner as a first arg when several run at once). The child runs to
     completion on its own; after each turn it waits a short window
     (CEREBRO_PAIR_IDLE, default 60s) for steering, and a quiet window
-    finishes it. Each steering message is injected into the running
-    session and recorded; when the child ends the orchestrator folds your
-    steering into the session spec and the upcoming plans, then tells you
-    what changed.
+    finishes it. If the child stream freezes, cerebro kills only that
+    child process group and restarts it with --resume, bounded by
+    CEREBRO_PAIR_STALL_RETRIES. Each steering message is injected into
+    the running session and recorded; when the child ends the orchestrator
+    folds your steering into the session spec and the upcoming plans, then
+    tells you what changed.
 
 Requirements: claude, codex, jq, python3. Child claudes additionally
 need git and gh on PATH for execute / apply-review / doc-write.
 
 Env: CEREBRO_HOME, CEREBRO_MODEL, CEREBRO_REVIEW_MODEL, CEREBRO_TIMEOUT,
 CEREBRO_CODEX_CMD, CEREBRO_CHILD_SESSION_TTL, CEREBRO_PAIR_IDLE,
+CEREBRO_PAIR_STALL, CEREBRO_PAIR_STALL_BUSY, CEREBRO_PAIR_STALL_RETRIES,
+CEREBRO_PAIR_STALL_BACKOFF,
 CEREBRO_DEBUG.
 EOF
 }
@@ -330,4 +334,3 @@ write_if_missing() {
   [[ -f "$path" ]] && return 0
   printf '%s' "$content" > "$path"
 }
-

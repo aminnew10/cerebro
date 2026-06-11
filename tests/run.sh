@@ -1335,7 +1335,7 @@ else
 fi
 
 # ========================================================================
-# 131-138. Pair-programming mode (--pair). --pair drives the child through
+# 131-139. Pair-programming mode (--pair). --pair drives the child through
 # claude's stream-json INPUT: cerebro feeds the task as the first message, then
 # after each turn waits a short window for a one-shot `cerebro steer` message
 # over a named pipe, and closes stdin (so the child finishes) once a window
@@ -1357,15 +1357,22 @@ mkdir -p "$PAIR_STUB_DIR"
 cat > "$PAIR_STUB_DIR/claude" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$PAIR_ARGV_LOG"
-sid=""; prev=""
+sid=""; resume=""; prev=""
 for a in "\$@"; do
   [[ "\$prev" == "--session-id" ]] && sid="\$a"
+  [[ "\$prev" == "--resume" ]] && resume="\$a"
   prev="\$a"
 done
-[[ -n "\$sid" ]] || sid="STUB-NOPIN"
+[[ -n "\$sid" ]] || sid="\${resume:-STUB-NOPIN}"
 printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "\$sid"
 case "\$*" in
   *"--input-format stream-json"*)
+    if [[ "\${PAIR_STALL_ONCE:-}" == 1 && -n "\${PAIR_STALL_STATE:-}" && ! -e "\$PAIR_STALL_STATE" ]]; then
+      : > "\$PAIR_STALL_STATE"
+      IFS= read -r _line || true
+      printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_stall_once","name":"Bash","input":{"command":"echo stuck"}}]}}'
+      while :; do sleep 1; done
+    fi
     # Paired: one input line = one turn. Emit an assistant line + a result for
     # each, staying alive until cerebro's pump closes stdin.
     while IFS= read -r _line; do
@@ -1543,8 +1550,29 @@ if [[ -x "$PAIR_STUB_DIR/claude" ]]; then
     printf 'FAIL  138b  observe done wrong [out=%s]\n' "$obsdone"; fail=$((fail + 1))
     failures+=("138b observe done :: out=$obsdone")
   fi
+
+  # --- 139. a frozen paired child is reaped and relaunched with --resume. ---
+  : > "$PAIR_ARGV_LOG"
+  STALL_STATE="$WORKDIR/pair-stall-once.state"
+  rm -f "$STALL_STATE"
+  rstout="$(env PATH="$PAIR_STUB_PATH" CEREBRO_SESSION_ID="$PSESS" \
+    CEREBRO_PAIR_IDLE=1 CEREBRO_PAIR_STALL=1 CEREBRO_PAIR_STALL_BUSY=1 \
+    CEREBRO_PAIR_STALL_RETRIES=1 CEREBRO_PAIR_STALL_BACKOFF=0 \
+    PAIR_STALL_ONCE=1 PAIR_STALL_STATE="$STALL_STATE" \
+    "$CEREBRO_BIN" execute "$REPO" --prompt "stall once then resume" --pair 2>"$WORKDIR/rsterr")"
+  rstrc=$?
+  rstargv="$(cat "$PAIR_ARGV_LOG")"
+  if [[ $rstrc -eq 0 && "$rstargv" == *"--session-id"* && "$rstargv" == *"--resume"* \
+        && "$rstout" == *".jsonl"* ]] \
+        && grep -q '"what":"pair_stall_restart"' "$PDIR/transcript.jsonl"; then
+    printf 'PASS  139  paired stall restarts the child with --resume\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  139  paired stall did not resume [rc=%d argv=%s out=%s err=%s]\n' \
+      "$rstrc" "$rstargv" "$rstout" "$(cat "$WORKDIR/rsterr")"; fail=$((fail + 1))
+    failures+=("139 pair stall resume :: rc=$rstrc argv=$rstargv")
+  fi
 else
-  for t in 131 132 133 133b 134 135 136 137 138 138b; do
+  for t in 131 132 133 133b 134 135 136 137 138 138b 139; do
     printf 'SKIP  %s  pair-mode (claude stub unavailable)\n' "$t"
   done
 fi

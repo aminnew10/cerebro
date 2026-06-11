@@ -44,9 +44,12 @@ pair_banner() {
 # or resumed paired child. Sets caller-scoped: PAIR_SID (session id), PAIR_OPTS
 # (extra claude flags -- stream-json input, plus a pinned --session-id for a
 # fresh run), PAIR_FIFO (the named pipe `cerebro steer` writes to), PAIR_STEER
-# (the file live steering is recorded to, folded back by pair_report) and
-# PAIR_IDLE (seconds of quiet after a turn before the child finishes). On a
-# resume the stored id is reused and the caller's --resume sets the session id.
+# (the file live steering is recorded to, folded back by pair_report),
+# PAIR_IDLE (seconds of quiet after a turn before the child finishes),
+# PAIR_PGID (file where exec_setsid records the child process group),
+# PAIR_STALL (idle-tier frozen-log threshold), PAIR_STALL_BUSY (in-flight
+# frozen-log threshold), and PAIR_LAUNCH (the child process-group wrapper). On
+# a resume the stored id is reused and the caller's --resume sets the session id.
 pair_begin() {
   local role="$1" repo="$2" branch="${3:-}" child_log="$4" resume="${5:-}"
   local label; label="$(pair_label "$role" "$repo" "$branch")"
@@ -60,29 +63,55 @@ pair_begin() {
   PAIR_STEER="${child_log%.jsonl}.steering.md"
   PAIR_FIFO="${child_log%.jsonl}.steer.fifo"
   PAIR_IDLE="${CEREBRO_PAIR_IDLE:-60}"
+  PAIR_PGID="${child_log%.jsonl}.pgid"
+  PAIR_STALL="${CEREBRO_PAIR_STALL:-90}"
+  # Keep the busy threshold below the common external 8-minute stale reset.
+  PAIR_STALL_BUSY="${CEREBRO_PAIR_STALL_BUSY:-420}"
+  PAIR_LAUNCH=(python3 "$CEREBRO_LIB_DIR/python/exec_setsid.py" "$PAIR_PGID")
   : > "$PAIR_STEER"
-  rm -f "$PAIR_FIFO"
+  rm -f "$PAIR_FIFO" "$PAIR_PGID"
   mkfifo "$PAIR_FIFO" || die "pair: cannot create steering pipe at $PAIR_FIFO"
   pair_banner "$role" "$PAIR_SID" "$label" "$PAIR_FIFO"
 }
 
-# pair_cleanup <pair> -- remove the steering pipe and presence lock once the
-# child has exited.
+# pair_cleanup <pair> -- remove the steering pipe and pgid file once the child
+# has exited. The .stalled sidecar is left for diagnostics.
 pair_cleanup() {
   (( $1 )) || return 0
   [[ -n "${PAIR_FIFO:-}" ]] && rm -f "$PAIR_FIFO"
+  [[ -n "${PAIR_PGID:-}" ]] && rm -f "$PAIR_PGID"
 }
 
-# pair_feed <pair> <fifo> <steer> <child_log> <idle_grace> -- stdin carries the
-# initial prompt. Unpaired: pass it through unchanged as claude -p text input.
-# Paired: hand it to the stream-json input pump (lib/python/pair_pump.py),
-# which emits the prompt as the first user message, then after each turn holds
-# a steering window open on the named pipe before a quiet window finishes the
-# child.
+# pair_stall_marker <child_log> -- path of the pump's authoritative stall sidecar.
+pair_stall_marker() { printf '%s' "${1%.jsonl}.stalled"; }
+
+# pair_stalled <child_log> -- true iff the pump flagged this child as stalled.
+pair_stalled() { [[ -e "$(pair_stall_marker "$1")" ]]; }
+
+# pair_stall_clear <child_log> -- consume (remove) the stall marker.
+pair_stall_clear() { rm -f "$(pair_stall_marker "$1")"; }
+
+# pair_stall_backoff <attempt> -- wait CEREBRO_PAIR_STALL_BACKOFF * 2^(attempt-1)
+# seconds before a resume restart. Default base is 5s.
+pair_stall_backoff() {
+  local n="$1"
+  local base="${CEREBRO_PAIR_STALL_BACKOFF:-5}"
+  local d=$(( base * (1 << (n - 1)) ))
+  log_event "pair_stall_restart" "attempt=$n backoff=${d}s"
+  if (( d > 0 )); then sleep "$d"; fi
+}
+
+# pair_feed <pair> <fifo> <steer> <child_log> <idle_grace> <pgid_file>
+# <stall> <stall_busy> -- stdin carries the initial prompt. Unpaired: pass it
+# through unchanged as claude -p text input (extra args ignored). Paired: hand
+# it to the stream-json input pump (lib/python/pair_pump.py), which emits the
+# prompt as the first user message, holds a steering window open after each
+# turn, and reaps the child process group if the child log freezes.
 pair_feed() {
-  local pair="$1" fifo="$2" steer="$3" child_log="$4" grace="$5"
+  local pair="$1" fifo="$2" steer="$3" child_log="$4" grace="$5" pgid="${6:-}" stall="${7:-}" stall_busy="${8:-}"
   if (( pair )); then
-    python3 "$CEREBRO_LIB_DIR/python/pair_pump.py" "$fifo" "$steer" "$child_log" "$grace"
+    python3 "$CEREBRO_LIB_DIR/python/pair_pump.py" \
+      "$fifo" "$steer" "$child_log" "$grace" "$pgid" "$stall" "$stall_busy"
   else
     cat
   fi
@@ -108,4 +137,3 @@ pair_report() {
     say "cerebro: pair mode -- no steering was sent during the paired session"
   fi
 }
-
