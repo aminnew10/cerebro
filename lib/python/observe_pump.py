@@ -62,6 +62,31 @@ def emit_empty(msg, status="done", tid=""):
     print(msg)
     print("=== OBSERVE STATUS: %s ===" % status)
 
+# --- probe mode ---------------------------------------------------------------
+# A 7th argv of "probe" asks only "is there anything to observe right now?"
+# (a named target with live paired children, or -- with no target -- any other
+# session that has them). It prints nothing and exits 0 when observable, 3 when
+# not, so a launcher can cheaply poll without draining or blocking.
+mode = sys.argv[7] if len(sys.argv) > 7 else ""
+if mode == "probe":
+    if target_id:
+        d = os.path.join(sessions_root, target_id)
+        observable = os.path.isdir(d) and bool(live_children(d))
+    else:
+        observable = False
+        try:
+            names = os.listdir(sessions_root)
+        except OSError:
+            names = []
+        for name in names:
+            if name == self_id:
+                continue
+            d = os.path.join(sessions_root, name)
+            if os.path.isdir(d) and live_children(d):
+                observable = True
+                break
+    sys.exit(0 if observable else 3)
+
 # --- resolve the target cerebro session ---------------------------------------
 if target_id:
     target = os.path.join(sessions_root, target_id)

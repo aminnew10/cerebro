@@ -1605,8 +1605,16 @@ exit 0
 EOF
   chmod +x "$OBS_STUB_DIR/claude"
   printf '#!/usr/bin/env bash\nexit 0\n' > "$OBS_STUB_DIR/codex"; chmod +x "$OBS_STUB_DIR/codex"
+  # --observe now blocks until the target has something observable, so give
+  # observe-target2 a live paired child for the duration of the launch.
+  OBSD_FIFO="$CEREBRO_HOME/sessions/observe-target2/children/execute-live.steer.fifo"
+  mkfifo "$OBSD_FIFO"
+  python3 -c 'import os,sys,time; os.open(sys.argv[1], os.O_RDONLY|os.O_NONBLOCK); time.sleep(8)' "$OBSD_FIFO" &
+  OBSD_HOLDER=$!; disown "$OBSD_HOLDER" 2>/dev/null || true
+  sleep 0.3
   ( PATH="$OBS_STUB_DIR:$PATH" CEREBRO_SESSION_ID=observe-launcher \
       "$CEREBRO_BIN" --observe observe-target2 >/dev/null 2>&1 )
+  kill "$OBSD_HOLDER" 2>/dev/null; rm -f "$OBSD_FIFO"
   obslaunch="$(cat "$OBS_ARGV_LOG")"
   # The kickoff prompt must land in the positional slot, i.e. BEFORE the
   # variadic --allowedTools (<tools...>) which would otherwise swallow it.
@@ -1622,6 +1630,44 @@ EOF
   else
     printf 'FAIL  138d  observe launch wrong [out=%s]\n' "$obslaunch"; fail=$((fail + 1))
     failures+=("138d observe launch :: out=$obslaunch")
+  fi
+
+  # --- 138e. cerebro --observe blocks until something is observable: with no
+  # live paired children it must NOT exec claude yet; once a target sprouts a
+  # live child it proceeds and launches. Reuses the 138d argv-logging stub. ---
+  mkdir -p "$CEREBRO_HOME/sessions/observe-wait-target/children"
+  OBSE_ARGV_LOG="$WORKDIR/observe-wait-argv.log"; : > "$OBSE_ARGV_LOG"
+  OBSE_STUB_DIR="$WORKDIR/observe-wait-stub"; mkdir -p "$OBSE_STUB_DIR"
+  cat > "$OBSE_STUB_DIR/claude" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "launched" >> "$OBSE_ARGV_LOG"
+exit 0
+EOF
+  chmod +x "$OBSE_STUB_DIR/claude"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$OBSE_STUB_DIR/codex"; chmod +x "$OBSE_STUB_DIR/codex"
+  ( PATH="$OBSE_STUB_DIR:$PATH" CEREBRO_SESSION_ID=observe-wait-launcher \
+      CEREBRO_OBSERVE_POLL=0.3 \
+      "$CEREBRO_BIN" --observe observe-wait-target >/dev/null 2>&1 ) &
+  OBSE_LAUNCH=$!
+  sleep 1
+  obse_early="$(cat "$OBSE_ARGV_LOG")"   # should still be empty: it's waiting
+  # Now make the target observable; the waiter should proceed within a poll.
+  OBSE_FIFO="$CEREBRO_HOME/sessions/observe-wait-target/children/execute-go.steer.fifo"
+  mkfifo "$OBSE_FIFO"
+  python3 -c 'import os,sys,time; os.open(sys.argv[1], os.O_RDONLY|os.O_NONBLOCK); time.sleep(6)' "$OBSE_FIFO" &
+  OBSE_HOLDER=$!; disown "$OBSE_HOLDER" 2>/dev/null || true
+  obse_late=""
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 0.5
+    obse_late="$(cat "$OBSE_ARGV_LOG")"
+    [[ -n "$obse_late" ]] && break
+  done
+  kill "$OBSE_HOLDER" 2>/dev/null; wait "$OBSE_LAUNCH" 2>/dev/null; rm -f "$OBSE_FIFO"
+  if [[ -z "$obse_early" && "$obse_late" == *"launched"* ]]; then
+    printf 'PASS  138e  cerebro --observe waits for observable, then launches\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  138e  observe wait wrong [early=%s late=%s]\n' "$obse_early" "$obse_late"; fail=$((fail + 1))
+    failures+=("138e observe wait :: early=$obse_early late=$obse_late")
   fi
 
   # --- 139. a frozen paired child is reaped and relaunched with --resume. ---
