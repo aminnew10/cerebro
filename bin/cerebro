@@ -56,7 +56,6 @@ unset _cerebro_src _cerebro_dir _cerebro_bin_dir
 . "$CEREBRO_LIB_DIR/config.sh"
 . "$CEREBRO_LIB_DIR/helpers.sh"
 . "$CEREBRO_LIB_DIR/payloads.sh"
-. "$CEREBRO_LIB_DIR/python.sh"
 . "$CEREBRO_LIB_DIR/session-store.sh"
 . "$CEREBRO_LIB_DIR/pair.sh"
 for _cerebro_cmd in "$CEREBRO_LIB_DIR"/commands/*.sh; do

@@ -1335,7 +1335,7 @@ else
 fi
 
 # ========================================================================
-# 131-139. Pair-programming mode (--pair). --pair drives the child through
+# 131-139b. Pair-programming mode (--pair). --pair drives the child through
 # claude's stream-json INPUT: cerebro feeds the task as the first message, then
 # after each turn waits a short window for a one-shot `cerebro steer` message
 # over a named pipe, and closes stdin (so the child finishes) once a window
@@ -1367,6 +1367,19 @@ done
 printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "\$sid"
 case "\$*" in
   *"--input-format stream-json"*)
+    if [[ "\${PAIR_DIVERGE_ONCE:-}" == 1 && -n "\${PAIR_DIVERGE_STATE:-}" && ! -e "\$PAIR_DIVERGE_STATE" ]]; then
+      : > "\$PAIR_DIVERGE_STATE"
+      IFS= read -r _line || true
+      tid="toolu_stream_diverged"
+      evt="{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"\$tid\",\"name\":\"Bash\",\"input\":{\"command\":\"echo done\"}}]}}"
+      printf '%s\n' "\$evt"
+      dlog="\$HOME/.claude/projects/test/\$sid.jsonl"
+      mkdir -p "\$(dirname "\$dlog")"
+      printf '%s\n' "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"\$sid\"}" > "\$dlog"
+      printf '%s\n' "\$evt" >> "\$dlog"
+      printf '%s\n' "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"\$tid\",\"content\":\"done\",\"is_error\":false}]}}" >> "\$dlog"
+      while :; do sleep 1; done
+    fi
     if [[ "\${PAIR_STALL_ONCE:-}" == 1 && -n "\${PAIR_STALL_STATE:-}" && ! -e "\$PAIR_STALL_STATE" ]]; then
       : > "\$PAIR_STALL_STATE"
       IFS= read -r _line || true
@@ -1571,8 +1584,31 @@ if [[ -x "$PAIR_STUB_DIR/claude" ]]; then
       "$rstrc" "$rstargv" "$rstout" "$(cat "$WORKDIR/rsterr")"; fail=$((fail + 1))
     failures+=("139 pair stall resume :: rc=$rstrc argv=$rstargv")
   fi
+
+  # --- 139b. a wedged stream with a durable tool_result restarts as stream_diverged. ---
+  : > "$PAIR_ARGV_LOG"
+  DIVERGE_STATE="$WORKDIR/pair-diverge-once.state"
+  DIVERGE_HOME="$WORKDIR/pair-diverge-home"
+  rm -f "$DIVERGE_STATE"; rm -rf "$DIVERGE_HOME"; mkdir -p "$DIVERGE_HOME"
+  dvstart="$(date +%s)"
+  dvout="$(env HOME="$DIVERGE_HOME" PATH="$PAIR_STUB_PATH" CEREBRO_SESSION_ID="$PSESS" \
+    CEREBRO_PAIR_IDLE=1 CEREBRO_PAIR_STALL=1 CEREBRO_PAIR_STALL_BUSY=8 \
+    CEREBRO_PAIR_STALL_RETRIES=1 CEREBRO_PAIR_STALL_BACKOFF=0 \
+    PAIR_DIVERGE_ONCE=1 PAIR_DIVERGE_STATE="$DIVERGE_STATE" \
+    "$CEREBRO_BIN" execute "$REPO" --prompt "stream wedges once then resume" --pair 2>"$WORKDIR/dverr")"
+  dvrc=$?
+  dvelapsed=$(( $(date +%s) - dvstart ))
+  dvargv="$(cat "$PAIR_ARGV_LOG")"
+  if [[ $dvrc -eq 0 && "$dvargv" == *"--resume"* && "$dvout" == *".jsonl"* \
+        && $dvelapsed -lt 6 ]]; then
+    printf 'PASS  139b paired stream divergence restarts with --resume\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  139b stream divergence did not resume fast enough [rc=%d elapsed=%s argv=%s out=%s err=%s]\n' \
+      "$dvrc" "$dvelapsed" "$dvargv" "$dvout" "$(cat "$WORKDIR/dverr")"; fail=$((fail + 1))
+    failures+=("139b pair stream divergence resume :: rc=$dvrc elapsed=$dvelapsed argv=$dvargv")
+  fi
 else
-  for t in 131 132 133 133b 134 135 136 137 138 138b 139; do
+  for t in 131 132 133 133b 134 135 136 137 138 138b 139 139b; do
     printf 'SKIP  %s  pair-mode (claude stub unavailable)\n' "$t"
   done
 fi
@@ -1733,6 +1769,24 @@ else
   for t in 154 155 156; do
     printf 'SKIP  %s  answer resume (claude stub unavailable)\n' "$t"
   done
+fi
+
+# --- 157. parse_stream survives a closed stderr preview pipe. ---
+PRS="$WORKDIR/parse-stream-result"
+PIS="$WORKDIR/parse-stream-id"
+{
+  printf '%s\n' '{"type":"system","subtype":"init","session_id":"PARSE-1"}'
+  printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_parse","name":"Bash","input":{"command":"echo parse"}}]}}'
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_parse","content":"parse","is_error":false}]}}'
+  printf '%s\n' '{"type":"result","subtype":"success","result":"ok"}'
+} | { python3 "$here/../lib/python/parse_stream.py" "$PRS" "$PIS" 2>&1; } | python3 -c 'pass' >/dev/null
+prsrc=$?
+if [[ $prsrc -eq 0 && "$(cat "$PRS" 2>/dev/null)" == "ok" && "$(cat "$PIS" 2>/dev/null)" == "PARSE-1" ]]; then
+  printf 'PASS  157  parse_stream survives closed stderr preview pipe\n'; pass=$((pass + 1))
+else
+  printf 'FAIL  157  parse_stream died on closed stderr [rc=%d result=%s id=%s]\n' \
+    "$prsrc" "$(cat "$PRS" 2>/dev/null)" "$(cat "$PIS" 2>/dev/null)"; fail=$((fail + 1))
+  failures+=("157 parse_stream closed stderr :: rc=$prsrc")
 fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

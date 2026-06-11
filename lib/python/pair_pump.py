@@ -9,12 +9,13 @@
 # finishes.
 #
 # Liveness: while a turn is in progress, the pump tracks child-log growth. If
-# the log freezes, an idle agent is killed after <stall_secs>; an agent with a
-# tool_use still awaiting a matching tool_result gets <stall_busy_secs>. This
-# bounds the Claude stream freeze seen in dogfooding without prematurely killing
-# legitimately long silent commands.
+# the stream log freezes, an idle agent is killed after <stall_secs>. An agent
+# with a tool_use still awaiting a matching tool_result gets <stall_busy_secs>,
+# unless Claude's durable session log already has that tool_result; that means
+# the child kept working but stdout stream-json wedged, so the normal idle
+# threshold is enough.
 
-import base64, json, os, select, signal, sys, time
+import base64, glob, json, os, select, signal, sys, time
 
 fifo, steer_path, child_log = sys.argv[1], sys.argv[2], sys.argv[3]
 idle_grace = float(sys.argv[4])
@@ -58,36 +59,78 @@ def turns_completed():
         pass
     return n
 
-def command_in_flight():
-    issued, returned = set(), set()
+def events(path):
     try:
-        with open(child_log) as fh:
+        with open(path) as fh:
             for line in fh:
                 line = line.strip()
                 if not line:
                     continue
                 try:
-                    ev = json.loads(line)
+                    yield json.loads(line)
                 except ValueError:
                     continue
-                etype = ev.get("type")
-                content = (ev.get("message") or {}).get("content")
-                if not isinstance(content, list):
-                    continue
-                for block in content:
-                    if not isinstance(block, dict):
-                        continue
-                    if etype == "assistant" and block.get("type") == "tool_use":
-                        bid = block.get("id")
-                        if bid is not None:
-                            issued.add(bid)
-                    elif etype == "user" and block.get("type") == "tool_result":
-                        tid = block.get("tool_use_id")
-                        if tid is not None:
-                            returned.add(tid)
     except OSError:
-        pass
-    return bool(issued - returned)
+        return
+
+def tool_state(path):
+    issued, returned = set(), set()
+    for ev in events(path):
+        etype = ev.get("type")
+        content = (ev.get("message") or {}).get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if etype == "assistant" and block.get("type") == "tool_use":
+                bid = block.get("id")
+                if bid is not None:
+                    issued.add(bid)
+            elif etype == "user" and block.get("type") == "tool_result":
+                tid = block.get("tool_use_id")
+                if tid is not None:
+                    returned.add(tid)
+    return issued, returned
+
+def pending_tools(path):
+    issued, returned = tool_state(path)
+    return issued - returned
+
+def command_in_flight():
+    return bool(pending_tools(child_log))
+
+def child_session_id():
+    for ev in events(child_log):
+        sid = ev.get("session_id")
+        if sid:
+            return sid
+    return ""
+
+durable_log = ""
+
+def durable_session_log():
+    global durable_log
+    if durable_log and os.path.exists(durable_log):
+        return durable_log
+    sid = child_session_id()
+    if not sid:
+        return ""
+    matches = glob.glob(os.path.expanduser(f"~/.claude/projects/*/{sid}.jsonl"))
+    if not matches:
+        return ""
+    durable_log = max(matches, key=lambda p: os.path.getmtime(p))
+    return durable_log
+
+def durable_returned_pending_tool():
+    pending = pending_tools(child_log)
+    if not pending:
+        return False
+    dlog = durable_session_log()
+    if not dlog:
+        return False
+    _issued, returned = tool_state(dlog)
+    return bool(pending & returned)
 
 def read_child_pgid():
     try:
@@ -119,10 +162,12 @@ def reap_child():
     except (ProcessLookupError, OSError):
         pass
 
-def mark_stalled():
+def mark_stalled(reason="stalled"):
     try:
         with open(child_log, "a") as fh:
-            fh.write('{"type":"result","subtype":"stalled","is_error":true}\n')
+            fh.write(json.dumps(
+                {"type": "result", "subtype": "stalled", "is_error": True, "reason": reason},
+                ensure_ascii=False) + "\n")
     except OSError:
         pass
     marker = (child_log[:-6] if child_log.endswith(".jsonl") else child_log) + ".stalled"
@@ -181,9 +226,11 @@ while True:
         else:
             silence = time.monotonic() - last_grew
             if silence >= stall_secs:
-                if (not command_in_flight()) or silence >= stall_busy_secs:
+                busy = command_in_flight()
+                stream_diverged = busy and durable_returned_pending_tool()
+                if (not busy) or stream_diverged or silence >= stall_busy_secs:
                     reap_child()
-                    mark_stalled()
+                    mark_stalled("stream_diverged" if stream_diverged else "quiet")
                     sys.exit(0)
     else:
         if completed > done_turns:

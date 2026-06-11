@@ -19,6 +19,24 @@ child_key = sys.argv[4] if len(sys.argv) > 4 else ""
 result_text = None
 result_subtype = None
 saw_any_event = False
+tool_summary_open = True
+
+def emit_tool_summary(line):
+    global tool_summary_open
+    if not tool_summary_open:
+        return
+    try:
+        sys.stderr.write(line)
+        sys.stderr.flush()
+    except (BrokenPipeError, OSError):
+        # The orchestrator sometimes previews `cerebro ... 2>&1 | head -6`.
+        # A closed preview pipe must not kill this parser, because that would
+        # also make tee stop draining Claude's stdout and freeze the child log.
+        tool_summary_open = False
+        try:
+            sys.stderr = open(os.devnull, "w")
+        except OSError:
+            pass
 
 for line in sys.stdin:
     line = line.strip()
@@ -57,8 +75,7 @@ for line in sys.stdin:
                 if len(target) > 120:
                     target = target[:120] + "..."
                 clr = "\r\033[2K" if sys.stderr.isatty() else ""
-                sys.stderr.write(f"{clr}  {name}: {target}\n")
-                sys.stderr.flush()
+                emit_tool_summary(f"{clr}  {name}: {target}\n")
     elif t == "result":
         result_subtype = ev.get("subtype")
         result_text = ev.get("result")
