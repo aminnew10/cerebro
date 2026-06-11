@@ -1608,9 +1608,12 @@ EOF
   ( PATH="$OBS_STUB_DIR:$PATH" CEREBRO_SESSION_ID=observe-launcher \
       "$CEREBRO_BIN" --observe observe-target2 >/dev/null 2>&1 )
   obslaunch="$(cat "$OBS_ARGV_LOG")"
+  # The kickoff prompt must land in the positional slot, i.e. BEFORE the
+  # variadic --allowedTools (<tools...>) which would otherwise swallow it.
+  obspre="${obslaunch%%--allowedTools*}"
   if [[ "$obslaunch" == *"OBSERVE MODE"* \
         && "$obslaunch" == *"cerebro observe observe-target2"* \
-        && "$obslaunch" == *"Start observing session observe-target2 now"* \
+        && "$obspre" == *"Start observing session observe-target2 now"* \
         && "$obslaunch" == *"Bash(cerebro observe:*)"* \
         && "$obslaunch" == *"Bash(cerebro steer:*)"* \
         && "$obslaunch" != *"Bash(cerebro:*)"* \
