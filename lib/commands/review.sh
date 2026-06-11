@@ -368,7 +368,7 @@ cmd_apply_review() {
   [[ -n "$CEREBRO_MODEL" ]] && opts+=(--model "$CEREBRO_MODEL")
 
   local PAIR_SID="" PAIR_OPTS=() PAIR_FIFO="" PAIR_STEER="" PAIR_IDLE="" \
-        PAIR_PGID="" PAIR_STALL="" PAIR_STALL_BUSY="" PAIR_LAUNCH=()
+        PAIR_PGID="" PAIR_STALL="" PAIR_LAUNCH=()
   (( pair )) && pair_begin apply-review "$repo" "$ar_branch" "$child_log" "$prior"
 
   local child_prompt
@@ -393,7 +393,7 @@ cmd_apply_review() {
     (( pair )) && run_opts+=("${PAIR_OPTS[@]}")
     child_store_begin "$ckey" claude apply-review "$repo" "${ar_branch:-default}" "$child_log"
     ( cd "$repo" && printf '%s' "$child_prompt" \
-        | pair_feed "$pair" "$PAIR_FIFO" "$PAIR_STEER" "$child_log" "$PAIR_IDLE" "$PAIR_PGID" "$PAIR_STALL" "$PAIR_STALL_BUSY" \
+        | pair_feed "$pair" "$PAIR_FIFO" "$PAIR_STEER" "$child_log" "$PAIR_IDLE" "$PAIR_PGID" "$PAIR_STALL" \
         | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
           ${PAIR_LAUNCH[@]+"${PAIR_LAUNCH[@]}"} "${TIMEOUT_CMD[@]}" claude "${run_opts[@]}" 2>/dev/null \
         | tee "$child_log" \
@@ -416,7 +416,7 @@ cmd_apply_review() {
         retry_opts+=("${PAIR_OPTS[@]}")
       fi
       ( cd "$repo" && printf '%s' "$child_prompt" \
-          | pair_feed "$pair" "$PAIR_FIFO" "$PAIR_STEER" "$child_log" "$PAIR_IDLE" "$PAIR_PGID" "$PAIR_STALL" "$PAIR_STALL_BUSY" \
+          | pair_feed "$pair" "$PAIR_FIFO" "$PAIR_STEER" "$child_log" "$PAIR_IDLE" "$PAIR_PGID" "$PAIR_STALL" \
           | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
             ${PAIR_LAUNCH[@]+"${PAIR_LAUNCH[@]}"} "${TIMEOUT_CMD[@]}" claude "${retry_opts[@]}" 2>/dev/null \
           | tee "$child_log" \

@@ -1596,7 +1596,7 @@ while IFS= read -r line; do
 done
 FAKE
   ( printf 'do the work' \
-      | python3 "$PYLIB/pair_pump.py" "$P145_FIFO" "$P145_STEER" "$P145_LOG" 2 "$WORKDIR/p145.pgid" 30 300 \
+      | python3 "$PYLIB/pair_pump.py" "$P145_FIFO" "$P145_STEER" "$P145_LOG" 2 "$WORKDIR/p145.pgid" 30 \
       | bash "$WORKDIR/fake145.sh" "$P145_LOG" "$P145_TURNS" "$P145_MARK" ) & p145=$!
   ( for i in $(seq 1 300); do [[ -e "$P145_MARK" ]] && break; sleep 0.05; done
     python3 "$PYLIB/steer_send.py" "$P145_FIFO" "use a hashmap 145" >/dev/null 2>&1 ) & s145=$!
@@ -1623,7 +1623,7 @@ while IFS= read -r line; do
 done
 FAKE
   ( printf 'do it' \
-      | python3 "$PYLIB/pair_pump.py" "$P146_FIFO" "$WORKDIR/p146.steering.md" "$P146_LOG" 1 "$WORKDIR/p146.pgid" 30 300 \
+      | python3 "$PYLIB/pair_pump.py" "$P146_FIFO" "$WORKDIR/p146.steering.md" "$P146_LOG" 1 "$WORKDIR/p146.pgid" 30 \
       | bash "$WORKDIR/fake146.sh" "$P146_LOG" ) & p146=$!
   ppump_wait "$p146" 15 >/dev/null 2>&1; r146=$?
   python3 "$PYLIB/steer_send.py" "$P146_FIFO" "too late" >/dev/null 2>&1; src146=$?
@@ -1645,7 +1645,7 @@ FAKE
 IFS= read -r line   # consume the prompt, then exit -> downstream closes
 FAKE
   ( printf 'do it' \
-      | python3 "$PYLIB/pair_pump.py" "$P147_FIFO" "$WORKDIR/p147.steering.md" "$P147_LOG" 30 "$WORKDIR/p147.pgid" 300 600 \
+      | python3 "$PYLIB/pair_pump.py" "$P147_FIFO" "$WORKDIR/p147.steering.md" "$P147_LOG" 30 "$WORKDIR/p147.pgid" 300 \
       | bash "$WORKDIR/fake147.sh" ) & p147=$!
   ppump_wait "$p147" 15 >/dev/null 2>&1; r147=$?
   python3 "$PYLIB/fifo_live.py" "$P147_FIFO" >/dev/null 2>&1; flc147=$?
@@ -1672,7 +1672,7 @@ printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"ty
 cat >/dev/null              # read the prompt but never emit a result; freeze
 FAKE
   ( printf 'do it' \
-      | python3 "$PYLIB/pair_pump.py" "$P148_FIFO" "$WORKDIR/p148.steering.md" "$P148_LOG" 1 "$P148_PGID" 2 300 \
+      | python3 "$PYLIB/pair_pump.py" "$P148_FIFO" "$WORKDIR/p148.steering.md" "$P148_LOG" 1 "$P148_PGID" 2 \
       | python3 "$PYLIB/exec_setsid.py" "$P148_PGID" bash "$WORKDIR/fake148.sh" "$P148_LOG" "$P148_SPID" ) & p148=$!
   ppump_wait "$p148" 15 >/dev/null 2>&1; r148=$?
   sentinel="$(cat "$P148_SPID" 2>/dev/null)"
@@ -1687,80 +1687,6 @@ FAKE
   fi
   [[ -n "$sentinel" ]] && kill "$sentinel" 2>/dev/null
   rm -f "$P148_FIFO" "${P148_LOG%.jsonl}.stalled"
-
-  # --- 148a. IDLE-GATED stall, idle half: a child that goes silent while IDLE
-  # (its last event is a returned tool_result -- no tool_use outstanding) and
-  # whose log stops growing is reaped at the short CEREBRO_PAIR_STALL even when
-  # CEREBRO_PAIR_STALL_BUSY is set far out (proving the idle tier, not the busy
-  # grace, drives the reap). ---
-  P148A_LOG="$WORKDIR/p148a.jsonl"; : > "$P148A_LOG"
-  P148A_FIFO="$WORKDIR/p148a.steer.fifo"; rm -f "$P148A_FIFO"; mkfifo "$P148A_FIFO"
-  P148A_PGID="$WORKDIR/p148a.pgid"; rm -f "$P148A_PGID"
-  P148A_SPID="$WORKDIR/p148a.sentinel"; rm -f "$P148A_SPID"
-  cat > "$WORKDIR/fake148a.sh" <<'FAKE'
-#!/usr/bin/env bash
-clog="$1"; spid="$2"
-sleep 300 &                 # sentinel in the child's group
-echo $! > "$spid"
-# Issue a tool_use and immediately return its tool_result: nothing in flight.
-printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"ta","name":"Bash","input":{}}]}}' >> "$clog"
-printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"ta","content":"ok"}]}}' >> "$clog"
-cat >/dev/null              # then go silent with no command running; freeze
-FAKE
-  ( printf 'do it' \
-      | python3 "$PYLIB/pair_pump.py" "$P148A_FIFO" "$WORKDIR/p148a.steering.md" "$P148A_LOG" 1 "$P148A_PGID" 1 20 \
-      | python3 "$PYLIB/exec_setsid.py" "$P148A_PGID" bash "$WORKDIR/fake148a.sh" "$P148A_LOG" "$P148A_SPID" ) & p148a=$!
-  ppump_wait "$p148a" 15 >/dev/null 2>&1; r148a=$?
-  sentinela="$(cat "$P148A_SPID" 2>/dev/null)"
-  salivea=0; [[ -n "$sentinela" ]] && kill -0 "$sentinela" 2>/dev/null && salivea=1
-  if [[ $r148a -ne 124 && $salivea -eq 0 ]] && grep -q '"subtype":"stalled"' "$P148A_LOG" \
-     && [[ -e "${P148A_LOG%.jsonl}.stalled" ]]; then
-    printf 'PASS  148a  idle child reaped at the short idle threshold (busy far out)\n'; pass=$((pass + 1))
-  else
-    printf 'FAIL  148a  idle reap [rc=%d sentinel_alive=%d]\n' "$r148a" "$salivea"; fail=$((fail + 1))
-    failures+=("148a idle reap :: rc=$r148a sentinel_alive=$salivea")
-  fi
-  [[ -n "$sentinela" ]] && kill "$sentinela" 2>/dev/null
-  rm -f "$P148A_FIFO" "${P148A_LOG%.jsonl}.stalled"
-
-  # --- 148b. IDLE-GATED stall, busy half: a child with a command IN FLIGHT (a
-  # tool_use with NO matching tool_result) whose log stops growing is NOT reaped
-  # at the short CEREBRO_PAIR_STALL -- it survives past the idle threshold and is
-  # only reaped once silence crosses the short CEREBRO_PAIR_STALL_BUSY grace.
-  # This is the real incident's mirror image: a legitimately long SILENT command
-  # must not be killed mid-flight. ---
-  P148B_LOG="$WORKDIR/p148b.jsonl"; : > "$P148B_LOG"
-  P148B_FIFO="$WORKDIR/p148b.steer.fifo"; rm -f "$P148B_FIFO"; mkfifo "$P148B_FIFO"
-  P148B_PGID="$WORKDIR/p148b.pgid"; rm -f "$P148B_PGID"
-  P148B_SPID="$WORKDIR/p148b.sentinel"; rm -f "$P148B_SPID"
-  cat > "$WORKDIR/fake148b.sh" <<'FAKE'
-#!/usr/bin/env bash
-clog="$1"; spid="$2"
-sleep 300 &                 # sentinel in the child's group
-echo $! > "$spid"
-# Issue a tool_use and never return its tool_result: a command stays in flight.
-printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tb","name":"Bash","input":{}}]}}' >> "$clog"
-cat >/dev/null              # silent while the command "runs"; freeze
-FAKE
-  ( printf 'do it' \
-      | python3 "$PYLIB/pair_pump.py" "$P148B_FIFO" "$WORKDIR/p148b.steering.md" "$P148B_LOG" 1 "$P148B_PGID" 1 5 \
-      | python3 "$PYLIB/exec_setsid.py" "$P148B_PGID" bash "$WORKDIR/fake148b.sh" "$P148B_LOG" "$P148B_SPID" ) & p148b=$!
-  for i in $(seq 1 100); do [[ -s "$P148B_SPID" ]] && break; sleep 0.05; done
-  sleep 2.5                  # past the idle threshold (1s), well before busy (5s)
-  sentinelb="$(cat "$P148B_SPID" 2>/dev/null)"
-  midaliveb=0; [[ -n "$sentinelb" ]] && kill -0 "$sentinelb" 2>/dev/null && midaliveb=1
-  ppump_wait "$p148b" 15 >/dev/null 2>&1; r148b=$?
-  endaliveb=0; [[ -n "$sentinelb" ]] && kill -0 "$sentinelb" 2>/dev/null && endaliveb=1
-  if [[ $r148b -ne 124 && $midaliveb -eq 1 && $endaliveb -eq 0 ]] \
-     && grep -q '"subtype":"stalled"' "$P148B_LOG" \
-     && [[ -e "${P148B_LOG%.jsonl}.stalled" ]]; then
-    printf 'PASS  148b  busy child survives idle threshold, reaped at busy grace\n'; pass=$((pass + 1))
-  else
-    printf 'FAIL  148b  busy grace [rc=%d mid_alive=%d end_alive=%d]\n' "$r148b" "$midaliveb" "$endaliveb"; fail=$((fail + 1))
-    failures+=("148b busy grace :: mid_alive=$midaliveb end_alive=$endaliveb")
-  fi
-  [[ -n "$sentinelb" ]] && kill "$sentinelb" 2>/dev/null
-  rm -f "$P148B_FIFO" "${P148B_LOG%.jsonl}.stalled"
 
   # --- 149. bounded auto-restart: a stub that stalls on its first paired launch
   # and completes on the --resume relaunch drives EXACTLY one backed-off restart,
@@ -1857,7 +1783,7 @@ EOF
     done
   fi
 else
-  for t in 145 146 147 148 148a 148b 149 149b; do
+  for t in 145 146 147 148 149 149b; do
     printf 'SKIP  %s  pair stall watchdog (python3 unavailable)\n' "$t"
   done
 fi

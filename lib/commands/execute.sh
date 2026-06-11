@@ -139,7 +139,7 @@ cmd_execute() {
   id_capture="$(mktemp)"
   msg_capture="$(mktemp)"
   local PAIR_SID="" PAIR_OPTS=() PAIR_FIFO="" PAIR_STEER="" PAIR_IDLE="" \
-        PAIR_PGID="" PAIR_STALL="" PAIR_STALL_BUSY="" PAIR_LAUNCH=()
+        PAIR_PGID="" PAIR_STALL="" PAIR_LAUNCH=()
   (( pair )) && pair_begin execute "$repo" "$new_branch" "$child_log" "$prior"
 
   # Stall-restart loop (OUTER). A paired child whose log freezes past
@@ -158,7 +158,7 @@ cmd_execute() {
     # it launches, so an interrupt now leaves a resumable record.
     child_store_begin "$ckey" claude execute "$repo" "${new_branch:-auto}" "$child_log"
     ( cd "$repo" && printf '%s' "$child_prompt" \
-        | pair_feed "$pair" "$PAIR_FIFO" "$PAIR_STEER" "$child_log" "$PAIR_IDLE" "$PAIR_PGID" "$PAIR_STALL" "$PAIR_STALL_BUSY" \
+        | pair_feed "$pair" "$PAIR_FIFO" "$PAIR_STEER" "$child_log" "$PAIR_IDLE" "$PAIR_PGID" "$PAIR_STALL" \
         | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
           ${PAIR_LAUNCH[@]+"${PAIR_LAUNCH[@]}"} "${TIMEOUT_CMD[@]}" claude "${run_opts[@]}" 2>/dev/null \
         | tee "$child_log" \
@@ -186,7 +186,7 @@ cmd_execute() {
         retry_opts+=("${PAIR_OPTS[@]}")
       fi
       ( cd "$repo" && printf '%s' "$child_prompt" \
-          | pair_feed "$pair" "$PAIR_FIFO" "$PAIR_STEER" "$child_log" "$PAIR_IDLE" "$PAIR_PGID" "$PAIR_STALL" "$PAIR_STALL_BUSY" \
+          | pair_feed "$pair" "$PAIR_FIFO" "$PAIR_STEER" "$child_log" "$PAIR_IDLE" "$PAIR_PGID" "$PAIR_STALL" \
           | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
             ${PAIR_LAUNCH[@]+"${PAIR_LAUNCH[@]}"} "${TIMEOUT_CMD[@]}" claude "${retry_opts[@]}" 2>/dev/null \
           | tee "$child_log" \

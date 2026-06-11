@@ -47,10 +47,8 @@ pair_banner() {
 # (the file live steering is recorded to, folded back by pair_report),
 # PAIR_IDLE (seconds of quiet after a turn before the child finishes), PAIR_PGID
 # (the file the launcher writes the child's process-group id to), PAIR_STALL
-# (idle-tier seconds of frozen child log before an IDLE turn is declared
-# stalled), PAIR_STALL_BUSY (the generous in-flight grace before a BUSY turn --
-# one with a command still running -- is declared stalled) and PAIR_LAUNCH (the
-# exec_setsid shim that puts the child in its own group). On a
+# (seconds of frozen child log before the turn is declared stalled) and
+# PAIR_LAUNCH (the exec_setsid shim that puts the child in its own group). On a
 # resume the stored id is reused and the caller's --resume sets the session id.
 pair_begin() {
   local role="$1" repo="$2" branch="${3:-}" child_log="$4" resume="${5:-}"
@@ -65,22 +63,17 @@ pair_begin() {
   PAIR_STEER="${child_log%.jsonl}.steering.md"
   PAIR_FIFO="${child_log%.jsonl}.steer.fifo"
   # PAIR_IDLE   : quiet window after a turn before the child finishes.
-  # PAIR_STALL  : AGGRESSIVE idle-tier silent-watchdog threshold. The watchdog
-  #               gates on whether a command is in flight: it only fires this
-  #               fast threshold when the agent is IDLE (no tool_use is awaiting
-  #               its tool_result). The motivating incident was exactly that --
-  #               an IDLE generation stall after every tool returned.
-  # PAIR_STALL_BUSY : GENEROUS in-flight grace. While a command IS in flight (a
-  #               SILENT docker compose up -d --build, a full test suite, a
-  #               Playwright call still running), the log can freeze without a
-  #               hang, so the watchdog waits this much longer before reaping.
-  #               RAISE CEREBRO_PAIR_STALL_BUSY for very long silent commands.
+  # PAIR_STALL  : AGGRESSIVE silent-watchdog threshold. The watchdog only sees
+  #               child-log growth, so a SILENT long command (docker compose up
+  #               -d --build, a full test suite, a big compile/clone) looks
+  #               identical to a true hang and -- with the auto-restart below --
+  #               can be killed+resumed repeatedly. RAISE CEREBRO_PAIR_STALL
+  #               (e.g. 900) for build/test-heavy runs.
   # PAIR_STALL_RETRIES / PAIR_STALL_BACKOFF : bound and pace the auto-restart
   #               (default 2 relaunches; backoff base*2^(n-1), base 5s).
   PAIR_IDLE="${CEREBRO_PAIR_IDLE:-60}"
   PAIR_PGID="${child_log%.jsonl}.pgid"
   PAIR_STALL="${CEREBRO_PAIR_STALL:-90}"
-  PAIR_STALL_BUSY="${CEREBRO_PAIR_STALL_BUSY:-900}"
   PAIR_LAUNCH=(python3 "$CEREBRO_LIB_DIR/python/exec_setsid.py" "$PAIR_PGID")
   : > "$PAIR_STEER"
   rm -f "$PAIR_FIFO" "$PAIR_PGID"
@@ -124,19 +117,17 @@ pair_stall_backoff() {
 }
 
 # pair_feed <pair> <fifo> <steer> <child_log> <idle_grace> <pgid_file> <stall>
-# <stall_busy> -- stdin carries the initial prompt. Unpaired: pass it through
-# unchanged as claude -p text input (the extra args are ignored). Paired: hand
-# it to the stream-json input pump (lib/python/pair_pump.py), which emits the
-# prompt as the first user message, then after each turn holds a steering window
-# open on the named pipe before a quiet window finishes the child -- and reaps
-# the child's group (via <pgid_file>) if its log freezes: past <stall> seconds
-# when IDLE, or past the generous <stall_busy> seconds while a command is in
-# flight.
+# -- stdin carries the initial prompt. Unpaired: pass it through unchanged as
+# claude -p text input (the extra args are ignored). Paired: hand it to the
+# stream-json input pump (lib/python/pair_pump.py), which emits the prompt as
+# the first user message, then after each turn holds a steering window open on
+# the named pipe before a quiet window finishes the child -- and reaps the
+# child's group (via <pgid_file>) if its log freezes past <stall> seconds.
 pair_feed() {
-  local pair="$1" fifo="$2" steer="$3" child_log="$4" grace="$5" pgid="$6" stall="$7" stall_busy="$8"
+  local pair="$1" fifo="$2" steer="$3" child_log="$4" grace="$5" pgid="$6" stall="$7"
   if (( pair )); then
     python3 "$CEREBRO_LIB_DIR/python/pair_pump.py" \
-      "$fifo" "$steer" "$child_log" "$grace" "$pgid" "$stall" "$stall_busy"
+      "$fifo" "$steer" "$child_log" "$grace" "$pgid" "$stall"
   else
     cat
   fi
