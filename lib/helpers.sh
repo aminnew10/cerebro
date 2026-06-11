@@ -126,6 +126,8 @@ usage() {
 usage:
   cerebro                       # start a new session (interactive chat)
   cerebro --resume [<id>]       # resume a session (id, or picker if omitted)
+  cerebro --observe [<id>]      # watch-and-steer-only session for another's
+                                #   live paired children (id, or auto-pick)
   cerebro list                  # list sessions, newest first
   cerebro --help                # this help
 
@@ -172,6 +174,12 @@ Notes:
     the running session and recorded; when the child ends the orchestrator
     folds your steering into the session spec and the upcoming plans, then
     tells you what changed.
+  * Observe-only sessions. `cerebro --observe [<id>]` opens an interactive
+    chat whose sole job is to watch and narrate another session's live
+    paired children (and steer them on your command). Its tools are
+    narrowed to `cerebro observe`/`steer` plus read-only commands, so it
+    makes no direct repo changes -- it is the pair-programming "watcher"
+    seat as a first-class session instead of a mode you ask for mid-chat.
 
 Requirements: claude, codex, jq, python3. Child claudes additionally
 need git and gh on PATH for execute / apply-review / doc-write.

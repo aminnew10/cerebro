@@ -152,6 +152,18 @@ def render(ev, out):
                 if name in ("Read", "Grep", "Glob", "LS", "NotebookRead"):
                     continue
                 inp = item.get("input", {}) or {}
+                # TodoWrite is the agent's own plan -- the closest thing to an
+                # explicit architecture/roadmap it emits. Render the list so the
+                # observer can narrate where the work is headed, not just "TodoWrite".
+                if name == "TodoWrite" and isinstance(inp.get("todos"), list):
+                    items = []
+                    for td in inp["todos"]:
+                        mark = {"completed": "x", "in_progress": ">"}.get(
+                            td.get("status"), " ")
+                        items.append("[%s] %s" % (mark, td.get("content") or ""))
+                    if items:
+                        out.append("plan: " + preview(" | ".join(items), 1200))
+                    continue
                 tgt = (inp.get("description") or inp.get("file_path") or
                        inp.get("pattern") or inp.get("path") or
                        inp.get("query") or inp.get("command") or "")
@@ -161,8 +173,11 @@ def render(ev, out):
                 body = inp.get("new_string")
                 if body is None:
                     body = inp.get("content")
+                # Carry enough of the body that a full function/type/signature
+                # survives: the observer can only quote the design it actually
+                # sees, and 600 chars truncates most real definitions.
                 if isinstance(body, str) and body.strip():
-                    out.append(("%s %s :: %s" % (name, tgt, preview(body, 600))).strip())
+                    out.append(("%s %s :: %s" % (name, tgt, preview(body, 1600))).strip())
                 else:
                     out.append(("%s %s" % (name, tgt)).strip())
     elif t == "result":

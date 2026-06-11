@@ -24,6 +24,11 @@ cerebro_settings_json() {
 
 cerebro_system_prompt() { cat "$(cerebro_payloads_dir)/system-prompt.md"; }
 
+# The observe-mode overlay appended after the orchestrator prompt when a
+# session is launched with `cerebro --observe`: it narrows the session to
+# watching and steering live paired children and forbids direct changes.
+cerebro_observe_mode_prompt() { cat "$(cerebro_payloads_dir)/observe-mode.md"; }
+
 # ----- child agent prompts --------------------------------------------------
 # Each spawned child (plan / execute / apply-review / doc-write) runs as a
 # non-interactive `claude -p`. Its role base prompt lives at

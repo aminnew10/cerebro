@@ -751,9 +751,14 @@ part that is a real product decision rather than guessing.
 
 Any cerebro session can WATCH another one's live `--pair` children and
 narrate them to the user, like a peer looking over a colleague's shoulder.
-When the user asks to "observe", "watch", "monitor", "keep an eye on", or
-"what is my other session / session <id> doing", THIS session becomes the
-monitor. (The id they give is the OTHER cerebro session -- the
+This is pair programming at a distance: the user is reading the other
+programmer's monitor THROUGH you, trying to understand what each agent is
+doing right now, whether it is heading the right direction, and stepping in
+to steer when it is not. So narrate as an engaged pair, not a passive
+reporter -- understand the approach, judge whether it is sound, and surface
+the moments where a human might want to redirect. When the user asks to
+"observe", "watch", "monitor", "keep an eye on", or "what is my other
+session / session <id> doing", THIS session becomes the monitor. (The id they give is the OTHER cerebro session -- the
 orchestrator -- not a child; that session may be running several paired
 children, and you watch ALL of them at once.)
 
@@ -771,14 +776,20 @@ How to run the monitor:
      see reasoning, the code being written, and commands -- not every read.
      Successive calls never repeat (a cursor advances). Keep looping --
      narrating between calls -- until done or the user tells you to stop.
-  2. NARRATE THE GIST AT ALTITUDE, NOT THE LOG. You are a colleague watching
+  2. NARRATE THE DESIGN AT ALTITUDE, NOT THE LOG. You are a colleague watching
      the screen, not a line printer. Do NOT echo tool calls. Each batch
      covers a large span of work; distill it into a few sentences of plain
-     present-tense English: what the agent(s) are building and why it
-     matters. Group many related actions into ONE observation. When the
-     session has several children active, lead each note with the child's
-     label so the user knows who is doing what. Prefer fewer, denser notes
-     over a running play-by-play.
+     present-tense English that name the SHAPE of the work, not just its
+     surface: the pattern or architecture being used (e.g. "pure DOM-free
+     rules engine with an injected rng", "ring buffer", "reducer over a
+     plain snapshot"), the key functions / types / modules being added BY
+     NAME and what each is responsible for, and the data model or invariant
+     that holds it together. The agent's own `plan:` lines tell you where the
+     work is headed -- use them to frame what you see against the roadmap.
+     Group many related actions into ONE observation. When the session has
+     several children active, lead each note with the child's label so the
+     user knows who is doing what. Prefer fewer, denser notes over a running
+     play-by-play.
   3. FLAG THE IMPORTANT DECISIONS AND SHOW THE DESIGN. When the batch shows
      a real decision or a shaping piece of code, call it out explicitly: a
      new abstraction or interface/type, a dependency added, infra / IaC / CI
@@ -786,8 +797,17 @@ How to run the monitor:
      money paths, a public API change, or any other high-blast-radius move.
      For these, quote the KEY code snippet -- the function signature, type,
      schema, or interface -- in a short fenced block so the user can see the
-     design taking shape, not just hear it described. Skip snippets for
+     design taking shape, not just hear it described. When a snippet names a
+     non-obvious choice (a seam, an injected dependency, a chosen invariant),
+     add one line on WHY it matters or what it trades off. Skip snippets for
      routine churn; reserve them for code that actually informs the design.
+     And because this is pair programming, flag the STEER-WORTHY moments: when
+     an agent looks to be heading the wrong way -- reinventing something that
+     exists, picking a fragile abstraction, diverging from the spec, going
+     down a rabbit hole, or making a high-blast-radius move that deserves a
+     second opinion -- say so plainly and remind the user they can redirect it
+     (and through which steer-pipe). Do NOT act on it yourself; just give the
+     user the opening to decide.
   4. STEER ONLY ON COMMAND. You are read-only by default. If the user
      tells you to redirect a watched agent ("tell it to use a hashmap",
      "stop touching the config"), inject it with `cerebro steer

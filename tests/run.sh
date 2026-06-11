@@ -1564,6 +1564,62 @@ if [[ -x "$PAIR_STUB_DIR/claude" ]]; then
     failures+=("138b observe done :: out=$obsdone")
   fi
 
+  # --- 138c. observe renders TodoWrite as a `plan:` line and carries a full
+  # function body past the old 600-char clip, so the observer can narrate the
+  # roadmap and quote the actual design. Fresh target session keeps the cursor
+  # clean (138/138b advanced the watcher's cursor for observe-target). ---
+  WTGT2="$CEREBRO_HOME/sessions/observe-target2/children"; mkdir -p "$WTGT2"
+  mkdir -p "$CEREBRO_HOME/sessions/observe-watcher2"
+  wfifo2="$WTGT2/execute-deep.steer.fifo"; wlog2="$WTGT2/execute-deep.jsonl"
+  mkfifo "$wfifo2"
+  python3 -c 'import os,sys,time; os.open(sys.argv[1], os.O_RDONLY|os.O_NONBLOCK); time.sleep(6)' "$wfifo2" &
+  WHOLDER2=$!; disown "$WHOLDER2" 2>/dev/null || true
+  longbody="$(python3 -c 'print("export function step(s){" + "/*x*/"*200 + "return s;}", end="")')"
+  {
+    printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"TodoWrite","input":{"todos":[{"content":"ring rules engine","status":"completed"},{"content":"wire controller","status":"in_progress"}]}}]}}'
+    printf '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Write","input":{"file_path":"rules.js","content":%s}}]}}\n' "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$longbody")"
+    printf '%s\n' '{"type":"result","subtype":"success"}'
+  } > "$wlog2"
+  obsdeep="$(CEREBRO_SESSION_ID=observe-watcher2 CEREBRO_OBSERVE_WINDOW=3 CEREBRO_OBSERVE_QUIET=1 \
+    "$CEREBRO_BIN" observe observe-target2 2>/dev/null)"
+  kill "$WHOLDER2" 2>/dev/null; rm -f "$wfifo2"
+  if [[ "$obsdeep" == *"plan: [x] ring rules engine | [>] wire controller"* \
+        && "$obsdeep" == *"return s;}"* ]]; then
+    printf 'PASS  138c  observe renders the plan and a full function body\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  138c  observe deep wrong [out=%s]\n' "$obsdeep"; fail=$((fail + 1))
+    failures+=("138c observe deep :: out=$obsdeep")
+  fi
+
+  # --- 138d. cerebro --observe launches a watch-and-steer-only session: the
+  # observe-mode overlay is in the system prompt, the target id is pre-wired,
+  # and the tool allow-list is narrowed to observe/steer/read (no broad
+  # Bash(cerebro:*), no Edit/Write). Stub claude+codex capture argv; the launch
+  # execs claude in a subshell so the stub just logs and exits. ---
+  OBS_STUB_DIR="$WORKDIR/observe-launch-stub"; mkdir -p "$OBS_STUB_DIR"
+  OBS_ARGV_LOG="$WORKDIR/observe-launch-argv.log"; : > "$OBS_ARGV_LOG"
+  cat > "$OBS_STUB_DIR/claude" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$OBS_ARGV_LOG"
+exit 0
+EOF
+  chmod +x "$OBS_STUB_DIR/claude"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$OBS_STUB_DIR/codex"; chmod +x "$OBS_STUB_DIR/codex"
+  ( PATH="$OBS_STUB_DIR:$PATH" CEREBRO_SESSION_ID=observe-launcher \
+      "$CEREBRO_BIN" --observe observe-target2 >/dev/null 2>&1 )
+  obslaunch="$(cat "$OBS_ARGV_LOG")"
+  if [[ "$obslaunch" == *"OBSERVE MODE"* \
+        && "$obslaunch" == *"cerebro observe observe-target2"* \
+        && "$obslaunch" == *"Bash(cerebro observe:*)"* \
+        && "$obslaunch" == *"Bash(cerebro steer:*)"* \
+        && "$obslaunch" != *"Bash(cerebro:*)"* \
+        && "$obslaunch" != *"Edit Write"* ]]; then
+    printf 'PASS  138d  cerebro --observe launches a watch-and-steer-only session\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  138d  observe launch wrong [out=%s]\n' "$obslaunch"; fail=$((fail + 1))
+    failures+=("138d observe launch :: out=$obslaunch")
+  fi
+
   # --- 139. a frozen paired child is reaped and relaunched with --resume. ---
   : > "$PAIR_ARGV_LOG"
   STALL_STATE="$WORKDIR/pair-stall-once.state"

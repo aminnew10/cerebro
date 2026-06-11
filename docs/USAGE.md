@@ -11,8 +11,18 @@ see [ARCHITECTURE.md](ARCHITECTURE.md).
 cerebro                       # mint a new session, drop into the chat
 cerebro --resume <id>         # resume a specific session
 cerebro --resume              # claude's session picker
+cerebro --observe [<id>]      # watch-and-steer-only session for another
+                              #   session's live paired children
 cerebro list                  # list sessions, newest first
 ```
+
+`cerebro --observe` opens an interactive chat dedicated to looking over the
+shoulder of another session's live `--pair` children: it polls `cerebro
+observe`, narrates the design taking shape, and steers an agent only when you
+tell it to. Its tools are narrowed to `observe`/`steer` plus read-only
+commands, so it makes no direct repo changes. Pass a target session id to
+watch by default, or omit it to auto-pick the most recently active session
+that has live paired children.
 
 ## Ship a feature (the core loop)
 

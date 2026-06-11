@@ -12,6 +12,7 @@ main() {
   case "$1" in
     -h|--help) usage; exit 0 ;;
     --resume) shift; cmd_resume "${1:-}" ;;
+    --observe) shift; cmd_launch_observer "${1:-}" ;;
     list) shift; cmd_list "$@" ;;
     plan) shift; cmd_plan "$@" ;;
     plans) shift; cmd_plans "$@" ;;
