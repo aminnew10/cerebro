@@ -20,9 +20,10 @@ cerebro list                  # list sessions, newest first
 shoulder of another session's live `--pair` children: it polls `cerebro
 observe`, narrates the design taking shape, and steers an agent only when you
 tell it to. Its tools are narrowed to `observe`/`steer` plus read-only
-commands, so it makes no direct repo changes. Pass a target session id to
-watch by default, or omit it to auto-pick the most recently active session
-that has live paired children.
+commands, so it makes no direct repo changes. Pass a target session id and it
+starts narrating that session immediately; omit the id to open the chat
+without auto-starting, then tell it to watch a session (it can auto-pick the
+most recently active one with live paired children).
 
 ## Ship a feature (the core loop)
 

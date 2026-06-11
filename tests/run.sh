@@ -1610,6 +1610,7 @@ EOF
   obslaunch="$(cat "$OBS_ARGV_LOG")"
   if [[ "$obslaunch" == *"OBSERVE MODE"* \
         && "$obslaunch" == *"cerebro observe observe-target2"* \
+        && "$obslaunch" == *"Start observing session observe-target2 now"* \
         && "$obslaunch" == *"Bash(cerebro observe:*)"* \
         && "$obslaunch" == *"Bash(cerebro steer:*)"* \
         && "$obslaunch" != *"Bash(cerebro:*)"* \

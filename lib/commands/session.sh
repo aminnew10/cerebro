@@ -101,10 +101,25 @@ cmd_launch_observer() {
 
   say "cerebro: starting observer session $sid${target:+ (watching $target)}"
   cd "$CEREBRO_HOME" || die "cd to $CEREBRO_HOME failed"
-  exec claude \
-    --session-id "$sid" \
-    --append-system-prompt "$(observer_append_prompt "$target")" \
-    --allowedTools "Bash(cerebro observe:*) Bash(cerebro steer:*) Bash(cerebro status:*) Bash(cerebro list:*) Bash(cerebro recall:*) Bash(cerebro spec:*) Bash(cerebro learnings:*) Read Grep Glob WebSearch WebFetch mcp__playwright__*"
+
+  # When a target is given, seed an interactive first turn so the observer
+  # starts narrating immediately instead of waiting for the user to type.
+  # A positional prompt without -p keeps the session interactive; it just
+  # submits as the first user message. With no target we stay fully
+  # interactive so the user can pick which session to watch.
+  local allowed="Bash(cerebro observe:*) Bash(cerebro steer:*) Bash(cerebro status:*) Bash(cerebro list:*) Bash(cerebro recall:*) Bash(cerebro spec:*) Bash(cerebro learnings:*) Read Grep Glob WebSearch WebFetch mcp__playwright__*"
+  if [[ -n "$target" ]]; then
+    exec claude \
+      --session-id "$sid" \
+      --append-system-prompt "$(observer_append_prompt "$target")" \
+      --allowedTools "$allowed" \
+      "Start observing session $target now: run \`cerebro observe $target\`, narrate what you see, and keep looping until its children are done or I stop you."
+  else
+    exec claude \
+      --session-id "$sid" \
+      --append-system-prompt "$(observer_append_prompt "$target")" \
+      --allowedTools "$allowed"
+  fi
 }
 
 # ----- subcommand: cerebro --resume [<id>] ---------------------------------
