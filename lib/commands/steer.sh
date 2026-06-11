@@ -46,7 +46,10 @@ cmd_steer() {
     fifo="${candidates[0]}"
   fi
   [[ -p "$fifo" ]] || die "steer: no live paired session at $fifo (the child may have finished)"
-  python3 "$CEREBRO_LIB_DIR/python/steer_send.py" "$fifo" "$msg" || die "steer: could not deliver (the child may have finished)"
+  # steer_send.py exits 3 with a distinct reason (no reader vs write failed) on
+  # any failure; only claim success after it returns 0.
+  python3 "$CEREBRO_LIB_DIR/python/steer_send.py" "$fifo" "$msg" \
+    || die "steer: not delivered (the child may have finished)"
   say "cerebro: steered $(basename "${fifo%.steer.fifo}")"
 }
 

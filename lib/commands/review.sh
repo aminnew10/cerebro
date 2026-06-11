@@ -367,11 +367,9 @@ cmd_apply_review() {
               --append-system-prompt "$sys_prompt")
   [[ -n "$CEREBRO_MODEL" ]] && opts+=(--model "$CEREBRO_MODEL")
 
-  local PAIR_SID="" PAIR_OPTS=() PAIR_FIFO="" PAIR_STEER="" PAIR_IDLE=""
-  if (( pair )); then
-    pair_begin apply-review "$repo" "$ar_branch" "$child_log" "$prior"
-    opts+=("${PAIR_OPTS[@]}")
-  fi
+  local PAIR_SID="" PAIR_OPTS=() PAIR_FIFO="" PAIR_STEER="" PAIR_IDLE="" \
+        PAIR_PGID="" PAIR_STALL="" PAIR_LAUNCH=()
+  (( pair )) && pair_begin apply-review "$repo" "$ar_branch" "$child_log" "$prior"
 
   local child_prompt
   child_prompt="$(
@@ -385,40 +383,64 @@ cmd_apply_review() {
   )"
 
   local rc id_capture msg_capture; id_capture="$(mktemp)"; msg_capture="$(mktemp)"
-  local run_opts=("${opts[@]}")
-  [[ -n "$prior" ]] && run_opts+=(--resume "$prior")
-  child_store_begin "$ckey" claude apply-review "$repo" "${ar_branch:-default}" "$child_log"
-  ( cd "$repo" && printf '%s' "$child_prompt" \
-      | pair_feed "$pair" "$PAIR_FIFO" "$PAIR_STEER" "$child_log" "$PAIR_IDLE" \
-      | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
-        "${TIMEOUT_CMD[@]}" claude "${run_opts[@]}" 2>/dev/null \
-      | tee "$child_log" \
-      | python3 "$CEREBRO_LIB_DIR/python/parse_stream.py" "$msg_capture" "$id_capture" "$store_file" "$ckey" )
-  rc=$?
-  pair_cleanup "$pair"
 
-  # Stale fallback (same rule as execute): only retry fresh when the resumed
-  # run never started -- no init event, so id_capture is empty and nothing was
-  # mutated. A resume that started then failed is fatal (handled below); a
-  # fresh re-run would duplicate the work it already applied.
-  if (( rc != 0 )) && [[ -n "$prior" ]] && [[ ! -s "$id_capture" ]]; then
-    log_event "apply_review_resume_failed" "rc=$rc resume=$prior; retrying fresh"
-    warn "apply-review: resume of $prior failed (rc=$rc); retrying without resume"
-    : > "$id_capture"
-    local retry_opts=("${opts[@]}")
-    if (( pair )); then
-      pair_begin apply-review "$repo" "$ar_branch" "$child_log" ""
-      retry_opts+=("${PAIR_OPTS[@]}")
-    fi
+  # Stall-restart loop (OUTER); stale-resume fallback stays the INNER step (see
+  # execute.sh for the full rationale).
+  local stall_n=0
+  while :; do
+    local run_opts=("${opts[@]}")
+    [[ -n "$prior" ]] && run_opts+=(--resume "$prior")
+    (( pair )) && run_opts+=("${PAIR_OPTS[@]}")
+    child_store_begin "$ckey" claude apply-review "$repo" "${ar_branch:-default}" "$child_log"
     ( cd "$repo" && printf '%s' "$child_prompt" \
-        | pair_feed "$pair" "$PAIR_FIFO" "$PAIR_STEER" "$child_log" "$PAIR_IDLE" \
+        | pair_feed "$pair" "$PAIR_FIFO" "$PAIR_STEER" "$child_log" "$PAIR_IDLE" "$PAIR_PGID" "$PAIR_STALL" \
         | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
-          "${TIMEOUT_CMD[@]}" claude "${retry_opts[@]}" 2>/dev/null \
+          ${PAIR_LAUNCH[@]+"${PAIR_LAUNCH[@]}"} "${TIMEOUT_CMD[@]}" claude "${run_opts[@]}" 2>/dev/null \
         | tee "$child_log" \
         | python3 "$CEREBRO_LIB_DIR/python/parse_stream.py" "$msg_capture" "$id_capture" "$store_file" "$ckey" )
     rc=$?
     pair_cleanup "$pair"
-  fi
+
+    # Stale fallback (INNER, same rule as execute): only retry fresh when the
+    # resumed run never started -- no init event, so id_capture is empty and
+    # nothing was mutated -- AND did not stall. A resume that started then
+    # failed is fatal (handled below); a fresh re-run would duplicate the work
+    # it already applied.
+    if (( rc != 0 )) && ! pair_stalled "$child_log" && [[ -n "$prior" ]] && [[ ! -s "$id_capture" ]]; then
+      log_event "apply_review_resume_failed" "rc=$rc resume=$prior; retrying fresh"
+      warn "apply-review: resume of $prior failed (rc=$rc); retrying without resume"
+      : > "$id_capture"
+      local retry_opts=("${opts[@]}")
+      if (( pair )); then
+        pair_begin apply-review "$repo" "$ar_branch" "$child_log" ""
+        retry_opts+=("${PAIR_OPTS[@]}")
+      fi
+      ( cd "$repo" && printf '%s' "$child_prompt" \
+          | pair_feed "$pair" "$PAIR_FIFO" "$PAIR_STEER" "$child_log" "$PAIR_IDLE" "$PAIR_PGID" "$PAIR_STALL" \
+          | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
+            ${PAIR_LAUNCH[@]+"${PAIR_LAUNCH[@]}"} "${TIMEOUT_CMD[@]}" claude "${retry_opts[@]}" 2>/dev/null \
+          | tee "$child_log" \
+          | python3 "$CEREBRO_LIB_DIR/python/parse_stream.py" "$msg_capture" "$id_capture" "$store_file" "$ckey" )
+      rc=$?
+      pair_cleanup "$pair"
+    fi
+
+    if (( pair )) && pair_stalled "$child_log"; then
+      if (( stall_n < ${CEREBRO_PAIR_STALL_RETRIES:-2} )); then
+        stall_n=$((stall_n + 1))
+        pair_stall_backoff "$stall_n"
+        pair_stall_clear "$child_log"
+        pair_begin apply-review "$repo" "$ar_branch" "$child_log" "$PAIR_SID"
+        prior="$PAIR_SID"
+        continue
+      fi
+      pair_stall_clear "$child_log"
+      log_event "pair_stall_giveup" "after=$stall_n stalls log=$child_log resume=$PAIR_SID"
+      rm -f "$id_capture" "$msg_capture"
+      die "apply-review: paired child stalled $stall_n time(s) and was not restarted further; it remains resumable (id $PAIR_SID) -- see $child_log"
+    fi
+    break
+  done
 
   if (( rc != 0 )); then
     rm -f "$id_capture" "$msg_capture"

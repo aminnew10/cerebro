@@ -44,8 +44,11 @@ pair_banner() {
 # or resumed paired child. Sets caller-scoped: PAIR_SID (session id), PAIR_OPTS
 # (extra claude flags -- stream-json input, plus a pinned --session-id for a
 # fresh run), PAIR_FIFO (the named pipe `cerebro steer` writes to), PAIR_STEER
-# (the file live steering is recorded to, folded back by pair_report) and
-# PAIR_IDLE (seconds of quiet after a turn before the child finishes). On a
+# (the file live steering is recorded to, folded back by pair_report),
+# PAIR_IDLE (seconds of quiet after a turn before the child finishes), PAIR_PGID
+# (the file the launcher writes the child's process-group id to), PAIR_STALL
+# (seconds of frozen child log before the turn is declared stalled) and
+# PAIR_LAUNCH (the exec_setsid shim that puts the child in its own group). On a
 # resume the stored id is reused and the caller's --resume sets the session id.
 pair_begin() {
   local role="$1" repo="$2" branch="${3:-}" child_log="$4" resume="${5:-}"
@@ -59,30 +62,72 @@ pair_begin() {
   fi
   PAIR_STEER="${child_log%.jsonl}.steering.md"
   PAIR_FIFO="${child_log%.jsonl}.steer.fifo"
+  # PAIR_IDLE   : quiet window after a turn before the child finishes.
+  # PAIR_STALL  : AGGRESSIVE silent-watchdog threshold. The watchdog only sees
+  #               child-log growth, so a SILENT long command (docker compose up
+  #               -d --build, a full test suite, a big compile/clone) looks
+  #               identical to a true hang and -- with the auto-restart below --
+  #               can be killed+resumed repeatedly. RAISE CEREBRO_PAIR_STALL
+  #               (e.g. 900) for build/test-heavy runs.
+  # PAIR_STALL_RETRIES / PAIR_STALL_BACKOFF : bound and pace the auto-restart
+  #               (default 2 relaunches; backoff base*2^(n-1), base 5s).
   PAIR_IDLE="${CEREBRO_PAIR_IDLE:-60}"
+  PAIR_PGID="${child_log%.jsonl}.pgid"
+  PAIR_STALL="${CEREBRO_PAIR_STALL:-90}"
+  PAIR_LAUNCH=(python3 "$CEREBRO_LIB_DIR/python/exec_setsid.py" "$PAIR_PGID")
   : > "$PAIR_STEER"
-  rm -f "$PAIR_FIFO"
+  rm -f "$PAIR_FIFO" "$PAIR_PGID"
   mkfifo "$PAIR_FIFO" || die "pair: cannot create steering pipe at $PAIR_FIFO"
   pair_banner "$role" "$PAIR_SID" "$label" "$PAIR_FIFO"
 }
 
-# pair_cleanup <pair> -- remove the steering pipe and presence lock once the
-# child has exited.
+# pair_cleanup <pair> -- remove the steering pipe and the pgid file once the
+# child has exited. The `.stalled` sidecar is intentionally left in place: it is
+# consumed by the auto-restart wrapper, which clears it itself before each
+# relaunch and on give-up. pair_cleanup runs after every pipeline (including
+# each stall relaunch), so it must NOT delete the marker.
 pair_cleanup() {
   (( $1 )) || return 0
   [[ -n "${PAIR_FIFO:-}" ]] && rm -f "$PAIR_FIFO"
+  [[ -n "${PAIR_PGID:-}" ]] && rm -f "$PAIR_PGID"
 }
 
-# pair_feed <pair> <fifo> <steer> <child_log> <idle_grace> -- stdin carries the
-# initial prompt. Unpaired: pass it through unchanged as claude -p text input.
-# Paired: hand it to the stream-json input pump (lib/python/pair_pump.py),
-# which emits the prompt as the first user message, then after each turn holds
-# a steering window open on the named pipe before a quiet window finishes the
-# child.
+# --- stall-restart helpers (consumed by each --pair command's launch loop) ---
+
+# pair_stall_marker <child_log> -- path of the pump's authoritative stall sidecar.
+pair_stall_marker() { printf '%s' "${1%.jsonl}.stalled"; }
+
+# pair_stalled <child_log> -- true iff the pump flagged this child as stalled.
+pair_stalled() { [[ -e "$(pair_stall_marker "$1")" ]]; }
+
+# pair_stall_clear <child_log> -- consume (remove) the stall marker.
+pair_stall_clear() { rm -f "$(pair_stall_marker "$1")"; }
+
+# pair_stall_backoff <attempt> -- wait CEREBRO_PAIR_STALL_BACKOFF * 2^(attempt-1)
+# s (attempt 1 -> base*1, attempt 2 -> base*2, ...). Logs the chosen delay.
+pair_stall_backoff() {
+  # Bind n and base on their own lines first: a `$((...))` that references them
+  # in the SAME `local` statement would expand before they are assigned, which
+  # under `set -u` reads them as unbound and aborts.
+  local n="$1"
+  local base="${CEREBRO_PAIR_STALL_BACKOFF:-5}"
+  local d=$(( base * (1 << (n - 1)) ))
+  log_event "pair_stall_restart" "attempt=$n backoff=${d}s"
+  if (( d > 0 )); then sleep "$d"; fi
+}
+
+# pair_feed <pair> <fifo> <steer> <child_log> <idle_grace> <pgid_file> <stall>
+# -- stdin carries the initial prompt. Unpaired: pass it through unchanged as
+# claude -p text input (the extra args are ignored). Paired: hand it to the
+# stream-json input pump (lib/python/pair_pump.py), which emits the prompt as
+# the first user message, then after each turn holds a steering window open on
+# the named pipe before a quiet window finishes the child -- and reaps the
+# child's group (via <pgid_file>) if its log freezes past <stall> seconds.
 pair_feed() {
-  local pair="$1" fifo="$2" steer="$3" child_log="$4" grace="$5"
+  local pair="$1" fifo="$2" steer="$3" child_log="$4" grace="$5" pgid="$6" stall="$7"
   if (( pair )); then
-    python3 "$CEREBRO_LIB_DIR/python/pair_pump.py" "$fifo" "$steer" "$child_log" "$grace"
+    python3 "$CEREBRO_LIB_DIR/python/pair_pump.py" \
+      "$fifo" "$steer" "$child_log" "$grace" "$pgid" "$stall"
   else
     cat
   fi

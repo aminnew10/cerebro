@@ -166,7 +166,11 @@ Notes:
     banner as a first arg when several run at once). The child runs to
     completion on its own; after each turn it waits a short window
     (CEREBRO_PAIR_IDLE, default 60s) for steering, and a quiet window
-    finishes it. Each steering message is injected into the running
+    finishes it. A silent child whose log freezes past CEREBRO_PAIR_STALL
+    (default 90s) is reaped and auto-resumed up to CEREBRO_PAIR_STALL_RETRIES
+    times -- RAISE CEREBRO_PAIR_STALL for runs that block silently on
+    builds/tests (e.g. `docker compose up --build`), or it will kill+resume
+    real work. Each steering message is injected into the running
     session and recorded; when the child ends the orchestrator folds your
     steering into the session spec and the upcoming plans, then tells you
     what changed.
@@ -176,6 +180,7 @@ need git and gh on PATH for execute / apply-review / doc-write.
 
 Env: CEREBRO_HOME, CEREBRO_MODEL, CEREBRO_REVIEW_MODEL, CEREBRO_TIMEOUT,
 CEREBRO_CODEX_CMD, CEREBRO_CHILD_SESSION_TTL, CEREBRO_PAIR_IDLE,
+CEREBRO_PAIR_STALL, CEREBRO_PAIR_STALL_RETRIES, CEREBRO_PAIR_STALL_BACKOFF,
 CEREBRO_DEBUG.
 EOF
 }

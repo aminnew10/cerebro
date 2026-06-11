@@ -11,5 +11,8 @@ except OSError:
     sys.exit(3)
 try:
     os.write(fd, ("S " + base64.b64encode(msg.encode("utf-8")).decode() + "\n").encode())
+except OSError:
+    sys.stderr.write("cerebro: steer write failed; not delivered.\n")
+    sys.exit(3)
 finally:
     os.close(fd)
