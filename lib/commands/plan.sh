@@ -2,26 +2,26 @@
 # subcommands: plan / plans
 # Sourced by bin/cerebro; not meant to be executed directly.
 
-# ----- subcommand: cerebro plan <repo> "<desc>" [--out <name>] -------------
+# ----- subcommand: cerebro plan "<plan markdown>" [--out <name>] ------------
+# The orchestrator drafts plans ITSELF (it holds the full conversation
+# context and the read-only bridges); it has no Write tool, so this is its
+# way to record a plan it composed -- the same pattern as `cerebro spec set`
+# and `cerebro learn-set`. Re-running with the same --out OVERWRITES the
+# file, which is how plan revisions stay the source of truth.
 
 cmd_plan() {
   require_session
-  build_timeout_cmd
 
-  local repo="${1:-}"; shift || true
-  local desc="${1:-}"; shift || true
+  local content="${1:-}"; shift || true
   local out_name=""
-  local pair=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --out) shift; out_name="${1:-}"; shift || true ;;
-      --pair) pair=1; shift ;;
       *) die "plan: unknown arg: $1" ;;
     esac
   done
-  [[ -n "$repo" && -n "$desc" ]] || die "usage: cerebro plan <repo-abs-path> \"<description>\" [--out <name>]"
-  [[ "$repo" = /* ]] || die "plan: repo path must be absolute: $repo"
-  [[ -d "$repo" ]] || die "plan: repo not a directory: $repo"
+  [[ -n "${content//[[:space:]]/}" ]] \
+    || die "usage: cerebro plan \"<plan markdown>\" [--out <name>]"
 
   local plans_dir="$CEREBRO_SESSION_DIR/plans"
   mkdir -p "$plans_dir"
@@ -33,76 +33,10 @@ cmd_plan() {
   fi
   out_name="${out_name%.md}"
   local out_path="$plans_dir/$out_name.md"
-  local child_log="$CEREBRO_SESSION_DIR/children/plan-$(ts_compact).jsonl"
 
-  local sys_prompt; sys_prompt="$(child_sys_prompt plan)"
-
-  # Child-session continuity: persist the plan child's conversation id keyed on
-  # repo+role+out_name so a plan that PAUSED with a question can be resumed with
-  # an answer (`cerebro answer ... --role plan --out <name>`) and continue its
-  # exploration instead of re-planning from scratch.
-  local store_file; store_file="$(child_sessions_file)"
-  local ckey; ckey="$(child_key "$repo" plan "$out_name")"
-
-  say "cerebro: planning in $repo -> $out_path"
-  log_event "plan_started" "$out_path"
-
-  local opts=(-p --permission-mode bypassPermissions --allowedTools "$(child_allowed_tools plan)"
-              --output-format stream-json --verbose
-              --append-system-prompt "$sys_prompt")
-  [[ -n "$CEREBRO_MODEL" ]] && opts+=(--model "$CEREBRO_MODEL")
-
-  local PAIR_SID="" PAIR_OPTS=() PAIR_FIFO="" PAIR_STEER="" PAIR_IDLE="" \
-        PAIR_PGID="" PAIR_STALL="" PAIR_STALL_BUSY="" PAIR_LAUNCH=()
-  (( pair )) && pair_begin plan "$repo" "" "$child_log"
-
-  local prompt
-  prompt="Write an implementation plan for the following request, exploring this repository with your read tools as needed.
-
-<request>
-$desc
-</request>"
-
-  local rc prior="" stall_n=0
-  while :; do
-    local run_opts=("${opts[@]}")
-    [[ -n "$prior" ]] && run_opts+=(--resume "$prior")
-    (( pair )) && run_opts+=("${PAIR_OPTS[@]}")
-    child_store_begin "$ckey" claude plan "$repo" "$out_name" "$child_log"
-    ( cd "$repo" && \
-      printf '%s' "$prompt" \
-        | pair_feed "$pair" "$PAIR_FIFO" "$PAIR_STEER" "$child_log" "$PAIR_IDLE" "$PAIR_PGID" "$PAIR_STALL" "$PAIR_STALL_BUSY" \
-        | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
-          ${PAIR_LAUNCH[@]+"${PAIR_LAUNCH[@]}"} "${TIMEOUT_CMD[@]}" claude "${run_opts[@]}" 2>/dev/null \
-        | tee "$child_log" \
-        | python3 "$CEREBRO_LIB_DIR/python/parse_stream.py" "$out_path" "" "$store_file" "$ckey" )
-    rc=$?
-    pair_cleanup "$pair"
-
-    if (( pair )) && pair_stalled "$child_log"; then
-      if (( stall_n < ${CEREBRO_PAIR_STALL_RETRIES:-2} )); then
-        stall_n=$((stall_n + 1))
-        pair_stall_backoff "$stall_n"
-        pair_stall_clear "$child_log"
-        pair_begin plan "$repo" "" "$child_log" "$PAIR_SID"
-        prior="$PAIR_SID"
-        continue
-      fi
-      pair_stall_clear "$child_log"
-      log_event "pair_stall_giveup" "after=$stall_n stalls log=$child_log resume=$PAIR_SID"
-      die "plan: paired child stalled $stall_n time(s) and was not restarted further; it remains resumable (id $PAIR_SID) -- see $child_log"
-    fi
-    break
-  done
-
-  if (( rc != 0 )); then
-    log_event "plan_failed" "rc=$rc"
-    die "plan: child claude failed (rc=$rc); see $child_log"
-  fi
-
-  child_store_done "$ckey"
+  printf '%s\n' "$content" > "$out_path" || die "plan: cannot write $out_path"
   log_event "plan_written" "$out_path"
-  pair_report "$pair" "$child_log"
+  say "cerebro: recorded plan ($out_path, ${#content} chars)"
   echo "$out_path"
 }
 

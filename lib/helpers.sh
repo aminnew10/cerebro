@@ -151,14 +151,14 @@ Notes:
   * No chat/PR/repo-specific flags are ever passed to `claude` or
     `codex`. The orchestrator addresses repos by absolute path as the
     first positional arg to its sub-agent tools.
-  * Paused children. A spawned child (plan / execute / apply-review /
+  * Paused children. A spawned child (execute / apply-review /
     doc-write) runs non-interactively and cannot ask questions mid-run.
     When it hits a genuine blocker it ends with its question as its final
     message; the orchestrator answers it (from the spec/recall, or by
     asking you) and resumes the SAME child session with the answer via
     `cerebro answer`, so the child continues where it paused.
   * Pair programming. Ask the orchestrator to "pair" (or watch / steer)
-    a plan, execute, apply-review, or doc-write child and it adds
+    an execute, apply-review, or doc-write child and it adds
     `--pair`: the child runs with claude's stream-json input so you can
     WATCH it live from ANOTHER cerebro session -- ask that session to
     "observe <the paired session's id>" and it narrates, in plain English,

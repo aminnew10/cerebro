@@ -3,25 +3,25 @@
 # Sourced by bin/cerebro; not meant to be executed directly.
 
 # ----- subcommand: cerebro answer <repo> "<answer>" [--role ...] -----------
-# A child (plan / execute / apply-review / doc-write) runs non-interactively,
-# so when it hits a genuine blocker it ends with its QUESTION as its closing
+# A child (execute / apply-review / doc-write) runs non-interactively, so
+# when it hits a genuine blocker it ends with its QUESTION as its closing
 # message instead of finishing the work. `cerebro answer` resumes that exact
 # child session and delivers the orchestrator's answer as the child's next
 # turn, so it continues where it paused instead of redoing work.
 #
 # The target child is identified by role+repo. When several children of the
 # same role are live in one repo (e.g. stacked execute branches), pass the
-# discriminator the launch used: --branch (execute/apply-review/doc-write),
-# --plan / --for-prompt (execute launched from a plan file / inline prompt with
-# no --branch), or --out (plan). With no discriminator and exactly one
-# resumable session of that role in the repo, that one is used.
+# discriminator the launch used: --branch (execute/apply-review/doc-write)
+# or --plan / --for-prompt (execute launched from a plan file / inline prompt
+# with no --branch). With no discriminator and exactly one resumable session
+# of that role in the repo, that one is used.
 cmd_answer() {
   require_session
   build_timeout_cmd
 
   local repo="${1:-}"; shift || true
   local answer="" role="execute"
-  local branch="" plan_path="" for_prompt="" out_name=""
+  local branch="" plan_path="" for_prompt=""
   # Second positional, if present and not a flag, is the answer text.
   if [[ $# -gt 0 && "${1:-}" != --* ]]; then
     answer="$1"; shift
@@ -33,19 +33,18 @@ cmd_answer() {
       --branch)     shift; branch="${1:-}";     shift || true ;;
       --plan)       shift; plan_path="${1:-}";  shift || true ;;
       --for-prompt) shift; for_prompt="${1:-}"; shift || true ;;
-      --out)        shift; out_name="${1:-}";   shift || true ;;
       *) die "answer: unknown arg: $1" ;;
     esac
   done
 
   [[ -n "$repo" ]] \
-    || die "usage: cerebro answer <repo-abs-path> \"<answer>\" [--role execute|apply-review|doc-write|plan] [--branch <name> | --plan <path> | --for-prompt <text> | --out <name>]"
+    || die "usage: cerebro answer <repo-abs-path> \"<answer>\" [--role execute|apply-review|doc-write] [--branch <name> | --plan <path> | --for-prompt <text>]"
   [[ "$repo" = /* ]] || die "answer: repo path must be absolute: $repo"
   [[ -d "$repo" ]] || die "answer: repo not a directory: $repo"
   [[ -n "$answer" ]] || die "answer: empty answer (pass the answer text as the second argument or via --message)"
   case "$role" in
-    execute|apply-review|doc-write|plan) ;;
-    *) die "answer: unknown role: $role (expected execute|apply-review|doc-write|plan)" ;;
+    execute|apply-review|doc-write) ;;
+    *) die "answer: unknown role: $role (expected execute|apply-review|doc-write)" ;;
   esac
 
   # Build the launch discriminator the original command keyed on, when the
@@ -57,8 +56,7 @@ cmd_answer() {
       elif [[ -n "$plan_path" ]];  then disc="plan:$plan_path"
       elif [[ -n "$for_prompt" ]]; then disc="prompt:$for_prompt"
       fi ;;
-    apply-review|doc-write) [[ -n "$branch" ]]   && disc="$branch" ;;
-    plan)                   [[ -n "$out_name" ]] && disc="$out_name" ;;
+    apply-review|doc-write) [[ -n "$branch" ]] && disc="$branch" ;;
   esac
 
   # Resolve the kept session: explicit discriminator -> exact key; otherwise
@@ -106,15 +104,11 @@ cmd_answer() {
   say "cerebro: answering $role child in $repo${label:+ ($label)}"
   log_event "answer_started" "role=$role repo=$repo target=${label:-auto} resume=$prior"
 
-  # plan writes its (now-completed) output back to the plan file; the mutating
-  # roles push commits, so we capture only the child's closing message to
-  # surface (it may complete, or pause again with a further question).
+  # The roles push commits rather than producing a file, so we capture only
+  # the child's closing message to surface (it may complete, or pause again
+  # with a further question).
   local rc result_path="" msg_capture=""
-  if [[ "$role" == plan ]]; then
-    result_path="$CEREBRO_SESSION_DIR/plans/$label.md"
-  else
-    msg_capture="$(mktemp)"; result_path="$msg_capture"
-  fi
+  msg_capture="$(mktemp)"; result_path="$msg_capture"
 
   child_store_begin "$ckey" claude "$role" "$repo" "$label" "$child_log"
   ( cd "$repo" && printf '%s' "$child_prompt" \
@@ -132,11 +126,7 @@ cmd_answer() {
 
   child_store_done "$ckey"
   log_event "answer_finished" "role=$role log=$child_log"
-  if [[ "$role" == plan ]]; then
-    echo "$result_path"
-  else
-    surface_child_reply "$msg_capture" "$role"
-    rm -f "$msg_capture"
-    echo "$child_log"
-  fi
+  surface_child_reply "$msg_capture" "$role"
+  rm -f "$msg_capture"
+  echo "$child_log"
 }

@@ -16,6 +16,7 @@ main() {
     list) shift; cmd_list "$@" ;;
     plan) shift; cmd_plan "$@" ;;
     plans) shift; cmd_plans "$@" ;;
+    audit) shift; cmd_audit "$@" ;;
     execute) shift; cmd_execute "$@" ;;
     review) shift; cmd_review "$@" ;;
     apply-review) shift; cmd_apply_review "$@" ;;

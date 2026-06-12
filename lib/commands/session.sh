@@ -55,7 +55,7 @@ cmd_launch() {
 }
 
 # Build the observer session's system prompt: the full orchestrator prompt
-# (so it understands what plan/execute/review children do) plus the
+# (so it understands what audit/execute/review children do) plus the
 # observe-mode overlay that narrows it to watching and steering. When a target
 # id is given, point it at that session by default. Echoed on stdout.
 observer_append_prompt() {

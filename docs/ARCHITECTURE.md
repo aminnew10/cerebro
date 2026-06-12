@@ -35,10 +35,10 @@ orchestrator — interactive `claude` session
   ▼
 cerebro CLI (bash, sourced modules)
   ├── child agents (one process per invocation)
-  │     plan          claude -p   read-only tools          cwd=<repo>
   │     execute       claude -p   Read/Edit/Write/Bash...  cwd=<repo>
   │     apply-review  claude -p   Read/Edit/Write/Bash...  cwd=<repo>
   │     doc-write     claude -p   Read/Edit/Write/Bash...  cwd=<repo>
+  │     audit         codex exec  --sandbox read-only      cwd=<repo>
   │     review        codex exec  --sandbox read-only      cwd=<repo>
   ├── read-only bridges (no agent spawned)
   │     git / gh      allow-listed verbs, exec'd directly
@@ -49,8 +49,10 @@ cerebro CLI (bash, sourced modules)
 
 Three kinds of work, three mechanisms:
 
-* **Thinking** happens in the orchestrator's own context (and in `plan`
-  children when synthesis across many files is needed).
+* **Thinking** happens in the orchestrator's own context — it writes
+  plans itself with the full conversation in hand, and read-only `audit`
+  children (codex) give a fresh-eyes, independent-model check of those
+  plans against the actual code.
 * **Looking** happens through the read-only bridges — direct `git`,
   `gh`, `rg`, and file reads with an enforced allow-list, no agent
   spawn, guaranteed non-mutating.
@@ -100,9 +102,8 @@ needs, enforced by the harness or the OS rather than by instruction:
 | process        | mutates?           | enforcement                                      |
 |----------------|--------------------|--------------------------------------------------|
 | orchestrator   | no                 | `--allowedTools` (no Edit/Write, Bash is `cerebro:*` only) |
-| `plan` child   | no                 | `--allowedTools Read Grep Glob` + web/playwright |
 | `execute` / `apply-review` / `doc-write` child | yes — that is the point | `--permission-mode bypassPermissions`, but `cwd` pinned to the one repo, role prompt constrains branch/commit behaviour |
-| `review` (codex) | no               | `codex exec --sandbox read-only`                 |
+| `audit` / `review` (codex) | no     | `codex exec --sandbox read-only`                 |
 | bridges        | no                 | verb/flag allow-lists, path confinement, `execve` (no shell) |
 
 The mutating children are deliberately *un*confined inside their repo —
@@ -144,7 +145,8 @@ There is no database and no in-memory state that matters. The layout:
     transcript.jsonl               # user prompts + cerebro milestone events
     spec.md                        # current requirements of record
     spec-history.jsonl             # append-only history of spec versions
-    plans/*.md                     # plan child output
+    plans/*.md                     # orchestrator-written plans
+    audits/*.md                    # audit child findings
     children/*.jsonl               # stream-json log of every child
     children/*.steering.md         # live steering from --pair runs
     children/codex-*.md            # review findings
@@ -209,8 +211,7 @@ pausing a first-class protocol:
 * The harness captures that final message (`parse_stream.py` writes the
   `result` event text) and surfaces it under a
   `----- <role> child closing message -----` banner
-  (`surface_child_reply()`), or, for `plan`, the question simply lands
-  in the plan file.
+  (`surface_child_reply()`).
 * `cerebro answer <repo> "<answer>" --role <role>` resumes the **same
   provider conversation** (`claude --resume <id>`) with the answer as
   the next turn, re-passing the identical role system prompt so the
@@ -225,7 +226,7 @@ when the decision is genuinely theirs.
 
 `sessions/<id>/child-sessions.json` maps a **child key** — sha1 of
 `repo + role + discriminator` (branch, plan path, inline prompt, or
-plan output name) — to `{id, provider, role, repo, branch, log, status,
+audit output name) — to `{id, provider, role, repo, branch, log, status,
 started_at, updated_at}`.
 
 Two timing decisions make interruption safe:
@@ -303,7 +304,7 @@ never feed a failed review's stderr to `apply-review` as findings.
 
 ### 9. Pair mode: steer over a FIFO, watch by reading logs
 
-Pair mode (`--pair` on plan/execute/apply-review/doc-write) swaps the
+Pair mode (`--pair` on execute/apply-review/doc-write) swaps the
 child's plain-text stdin for claude's `--input-format stream-json` and
 inserts an input pump (`lib/python/pair_pump.py`):
 
@@ -452,7 +453,7 @@ If you change code in this repo, do not break these:
    write-if-missing, repo AGENTS.md/CLAUDE.md are never overwritten by
    children.
 9. **Stdout contracts are stable.** Subcommands that echo a path
-   (`plan`, `review`, `execute`'s child log) keep stdout clean of
+   (`plan`, `audit`, `review`, `execute`'s child log) keep stdout clean of
    anything else; human chatter goes to stderr (`say`/`warn`). The
    orchestrator parses stdout.
 

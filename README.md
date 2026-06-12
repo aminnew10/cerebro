@@ -7,9 +7,11 @@
 `cerebro` drops you into a `claude` chat configured as an
 orchestrator. It can read, search, and browse — but never touch your
 repos directly: every edit, git operation, PR, and code review happens
-in a short-lived sub-agent it spawns (`claude -p` for planning and
-code, `codex exec` for review). You describe what you want and stay in
-the chat.
+in a short-lived sub-agent it spawns (`claude -p` for code, `codex
+exec` for review and plan audits). The orchestrator writes plans itself
+with its full conversation context, then has codex audit them against
+the actual code with fresh, independent eyes. You describe what you
+want and stay in the chat.
 
 ## Quick start
 

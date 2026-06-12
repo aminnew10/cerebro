@@ -29,8 +29,12 @@ cerebro_system_prompt() { cat "$(cerebro_payloads_dir)/system-prompt.md"; }
 # watching and steering live paired children and forbids direct changes.
 cerebro_observe_mode_prompt() { cat "$(cerebro_payloads_dir)/observe-mode.md"; }
 
+# The plan-audit prompt fed to the read-only `codex exec` child spawned by
+# `cerebro audit` (the plan / spec / context blocks are appended after it).
+cerebro_audit_prompt() { cat "$(cerebro_payloads_dir)/prompts/audit.md"; }
+
 # ----- child agent prompts --------------------------------------------------
-# Each spawned child (plan / execute / apply-review / doc-write) runs as a
+# Each spawned claude child (execute / apply-review / doc-write) runs as a
 # non-interactive `claude -p`. Its role base prompt lives at
 # lib/payloads/prompts/<role>.md and the shared non-interactive note beside
 # them, so a single source feeds both the original command and `cerebro
@@ -50,17 +54,17 @@ child_sys_prompt() {
   local role="$1"
   local f="$(cerebro_payloads_dir)/prompts/$role.md"
   case "$role" in
-    plan|execute|apply-review|doc-write) ;;
+    execute|apply-review|doc-write) ;;
     *) die "child_sys_prompt: unknown role: $role" ;;
   esac
   printf '%s\n\n%s' "$(cat "$f")" "$(child_noninteractive_note)"
 }
 
-# child_allowed_tools <role> -- the --allowedTools list for a child of the
-# given role. plan is read-only; the mutating roles also get Edit/Write/Bash.
+# child_allowed_tools <role> -- the --allowedTools list for a claude child
+# of the given role (all mutating; the read-only audit child runs on codex
+# with --sandbox read-only instead).
 child_allowed_tools() {
   case "$1" in
-    plan) printf 'Read Grep Glob WebSearch WebFetch mcp__playwright__*' ;;
     execute|apply-review|doc-write)
       printf 'Read Edit Write Bash Grep Glob WebSearch WebFetch mcp__playwright__*' ;;
     *) die "child_allowed_tools: unknown role: $1" ;;

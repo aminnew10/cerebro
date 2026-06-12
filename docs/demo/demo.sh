@@ -37,7 +37,9 @@ say "${MA}●${N} Capturing the requirements, then drafting a plan."
 slow 0.4
 say "  ${D}⏺ cerebro spec set \"Rate-limit the public API; 429 + Retry-After…\"${N}"
 slow 0.6
-say "  ${D}⏺ cerebro plan /Users/amin/work/webapp \"add rate limiting…\"${N}"
+say "  ${D}⏺ cerebro grep /Users/amin/work/webapp \"router.use\" src/${N}"
+slow 0.5
+say "  ${D}⏺ cerebro plan \"# Rate-limit the public API…\" --out plan-1${N}"
 slow 1.4
 say "${MA}●${N} Plan ready → ${YE}sessions/3f2c91ae/plans/plan-1.md${N}"
 say "    1. Token-bucket middleware in src/middleware/rate-limit.ts"

@@ -1327,11 +1327,42 @@ if [[ -x "$CODEX_STUB_DIR/codex" ]]; then
     printf 'FAIL  128b  re-review did not pass resume <thread_id> [argv=%s]\n' "$(cat "$CODEX_ARGV_LOG")"; fail=$((fail + 1))
     failures+=("128b review resume argv missing")
   fi
+  # --- 128c. audit runs codex read-only on the plan and echoes findings ---
+  audit_plan="$(env CEREBRO_SESSION_ID="$RSESS" \
+    "$CEREBRO_BIN" plan "# The plan: touch lib/thing.sh" --out audit-target 2>/dev/null)"
+  : > "$CODEX_ARGV_LOG"
+  audit_out="$(env PATH="$CODEX_STUB_PATH" CEREBRO_SESSION_ID="$RSESS" CEREBRO_CODEX_CMD=codex \
+    "$CEREBRO_BIN" audit "$REPO" "$audit_plan" --context "key paths: lib/" 2>/dev/null)"
+  audit_argv="$(cat "$CODEX_ARGV_LOG")"
+  audit_id="$(jq -r '.[] | select(.provider=="codex" and .role=="audit") | .id' "$RDIR/child-sessions.json" 2>/dev/null)"
+  if [[ "$audit_out" == "$RDIR/audits/audit-target-audit.md" && -s "$audit_out" \
+        && "$audit_argv" == *"--sandbox read-only"* \
+        && "$audit_argv" == *"touch lib/thing.sh"* \
+        && "$audit_argv" == *"key paths: lib/"* \
+        && "$audit_id" == "$CX_TID" ]]; then
+    printf 'PASS  128c  audit runs codex read-only with plan+context, records thread\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  128c  audit codex run wrong [out=%s id=%s]\n' "$audit_out" "$audit_id"; fail=$((fail + 1))
+    failures+=("128c audit codex :: out=$audit_out id=$audit_id")
+  fi
+
+  # --- 128d. a re-audit of the same plan resumes the stored codex thread ---
+  : > "$CODEX_ARGV_LOG"
+  env PATH="$CODEX_STUB_PATH" CEREBRO_SESSION_ID="$RSESS" CEREBRO_CODEX_CMD=codex \
+    "$CEREBRO_BIN" audit "$REPO" "$audit_plan" >/dev/null 2>&1
+  if grep -q "resume $CX_TID" "$CODEX_ARGV_LOG"; then
+    printf 'PASS  128d  re-audit runs codex exec resume <thread_id>\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  128d  re-audit did not pass resume <thread_id> [argv=%s]\n' "$(cat "$CODEX_ARGV_LOG")"; fail=$((fail + 1))
+    failures+=("128d audit resume argv missing")
+  fi
 else
   printf 'SKIP  127  review codex-session capture (codex stub unavailable)\n'
   printf 'SKIP  127b review codex --json (codex stub unavailable)\n'
   printf 'SKIP  128  review codex-session resume (codex stub unavailable)\n'
   printf 'SKIP  128b review codex resume argv (codex stub unavailable)\n'
+  printf 'SKIP  128c audit codex run (codex stub unavailable)\n'
+  printf 'SKIP  128d audit codex resume (codex stub unavailable)\n'
 fi
 
 # ========================================================================
@@ -1496,18 +1527,17 @@ if [[ -x "$PAIR_STUB_DIR/claude" ]]; then
     failures+=("135 default execute pair leak :: argv=$npargv")
   fi
 
-  # --- 136. plan --pair pairs too; with no steerer it auto-finishes on idle ---
-  : > "$PAIR_ARGV_LOG"
-  qout="$(env PATH="$PAIR_STUB_PATH" CEREBRO_SESSION_ID="$PSESS" CEREBRO_PAIR_IDLE=1 \
-    "$CEREBRO_BIN" plan "$REPO" "add a cache" --out pair-plan --pair 2>/dev/null)"
+  # --- 136. audit has no pair mode (codex has no live-steer) ---
+  pair_plan="$(env CEREBRO_SESSION_ID="$PSESS" \
+    "$CEREBRO_BIN" plan "# Add a cache" --out pair-plan 2>/dev/null)"
+  qerr="$(env CEREBRO_SESSION_ID="$PSESS" \
+    "$CEREBRO_BIN" audit "$REPO" "$pair_plan" --pair 2>&1 >/dev/null)"
   qrc=$?
-  qargv="$(cat "$PAIR_ARGV_LOG")"
-  if [[ $qrc -eq 0 && "$qargv" == *"--input-format stream-json"* \
-        && "$qargv" != *"--remote-control"* && -s "$PDIR/plans/pair-plan.md" ]]; then
-    printf 'PASS  136  plan --pair pairs and auto-finishes on idle\n'; pass=$((pass + 1))
+  if [[ $qrc -ne 0 && "$qerr" == *"unknown arg: --pair"* ]]; then
+    printf 'PASS  136  audit rejects --pair (codex has no live-steer)\n'; pass=$((pass + 1))
   else
-    printf 'FAIL  136  plan --pair wrong [rc=%d argv=%s]\n' "$qrc" "$qargv"; fail=$((fail + 1))
-    failures+=("136 plan --pair :: rc=$qrc")
+    printf 'FAIL  136  audit --pair not rejected [rc=%d err=%s]\n' "$qrc" "$qerr"; fail=$((fail + 1))
+    failures+=("136 audit --pair rejection :: rc=$qrc")
   fi
 
   # --- 137. apply-review --prompt --pair pairs on the current branch ---
@@ -1859,18 +1889,11 @@ if (( STUB_OK )); then
     failures+=("155 answer surface :: out=$ans_out")
   fi
 
-  # --- 156. answer --role plan rewrites the plan file and echoes its path ---
-  plan_path="$(env PATH="$ID_STUB_PATH" CEREBRO_SESSION_ID="$ANSESS" \
-    "$CEREBRO_BIN" plan "$REPO" "design the thing" 2>/dev/null)"
-  pout="$(env PATH="$ID_STUB_PATH" CEREBRO_SESSION_ID="$ANSESS" \
-    "$CEREBRO_BIN" answer "$REPO" "yes, go with it" --role plan --out "$(basename "${plan_path%.md}")" 2>/dev/null)"
-  if [[ "$pout" == "$plan_path" && -s "$plan_path" ]] \
-     && grep -q 'role=plan' "$ANDIR/transcript.jsonl"; then
-    printf 'PASS  156  answer --role plan rewrites and echoes the plan file\n'; pass=$((pass + 1))
-  else
-    printf 'FAIL  156  answer plan path mismatch [plan=%s out=%s]\n' "$plan_path" "$pout"; fail=$((fail + 1))
-    failures+=("156 answer plan :: plan=$plan_path out=$pout")
-  fi
+  # --- 156. answer --role audit rejected (audit children are codex,
+  # which `cerebro answer` cannot resume) ---
+  STDERR_CONTAINS="unknown role" \
+  run_case 156 "answer --role audit rejected" 1 -- \
+    "$CEREBRO_BIN" answer "$REPO" "go" --role audit
 else
   for t in 154 155 156; do
     printf 'SKIP  %s  answer resume (claude stub unavailable)\n' "$t"
@@ -1894,6 +1917,52 @@ else
     "$prsrc" "$(cat "$PRS" 2>/dev/null)" "$(cat "$PIS" 2>/dev/null)"; fail=$((fail + 1))
   failures+=("157 parse_stream closed stderr :: rc=$prsrc")
 fi
+
+# ========================================================================
+# plan (orchestrator-written) and audit argument validation. `cerebro plan`
+# spawns no child: it records markdown the orchestrator composed, like
+# `spec set`. `cerebro audit` is the read-only child that checks a plan.
+# ========================================================================
+
+# --- 158. plan: blank content rejected ---
+STDERR_CONTAINS="usage: cerebro plan" \
+run_case 158 "plan blank content rejected" 1 -- "$CEREBRO_BIN" plan "   "
+
+# --- 159. plan records the markdown and echoes the path ---
+plan_out="$("$CEREBRO_BIN" plan "# My plan
+
+Do the thing." --out my-plan 2>/dev/null)"
+if [[ "$plan_out" == "$CEREBRO_HOME/sessions/$CEREBRO_SESSION_ID/plans/my-plan.md" ]] \
+   && grep -q '# My plan' "$plan_out" && grep -q 'Do the thing.' "$plan_out"; then
+  printf 'PASS  159  plan records content and echoes the path\n'; pass=$((pass + 1))
+else
+  printf 'FAIL  159  plan did not record content [out=%s]\n' "$plan_out"; fail=$((fail + 1))
+  failures+=("159 plan record :: out=$plan_out")
+fi
+
+# --- 160. plan: same --out overwrites (the revision flow) ---
+"$CEREBRO_BIN" plan "# Revised plan" --out my-plan >/dev/null 2>&1
+if grep -q '# Revised plan' "$plan_out" && ! grep -q 'Do the thing.' "$plan_out"; then
+  printf 'PASS  160  plan --out same name overwrites the file\n'; pass=$((pass + 1))
+else
+  printf 'FAIL  160  plan --out did not overwrite [file=%s]\n' "$(cat "$plan_out" 2>/dev/null)"; fail=$((fail + 1))
+  failures+=("160 plan overwrite")
+fi
+
+# --- 161. audit: missing/empty plan file rejected ---
+STDERR_CONTAINS="plan file missing or empty" \
+run_case 161 "audit missing plan rejected" 1 -- \
+  "$CEREBRO_BIN" audit "$REPO" "$WORKDIR/no-such-plan.md"
+
+# --- 162. audit: relative repo path rejected ---
+STDERR_CONTAINS="must be absolute" \
+run_case 162 "audit relative repo rejected" 1 -- \
+  "$CEREBRO_BIN" audit relative "$plan_out"
+
+# --- 163. audit: unknown arg rejected ---
+STDERR_CONTAINS="unknown arg" \
+run_case 163 "audit unknown arg rejected" 1 -- \
+  "$CEREBRO_BIN" audit "$REPO" "$plan_out" --bogus
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 if (( fail > 0 )); then
