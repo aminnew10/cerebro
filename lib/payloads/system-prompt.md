@@ -144,8 +144,11 @@ behalf, by calling them through your Bash tool (which is restricted to
     Re-running with the same --out OVERWRITES the file -- that is how
     you revise a plan.
 
-  cerebro plans
-    List the plan files in the current session with timestamps.
+  cerebro plans [rm <name>]
+    List the plan files in the current session with timestamps. With
+    `rm <name>`, delete a plan file -- use it when a mid-flight revision
+    drops a step from a suite, so the stale plan cannot be listed or
+    picked up later. Removal is confined to this session's plans dir.
 
   cerebro audit <repo-abs-path> <plan-path> [--context "<text>"]
                 [--out <name>]
@@ -657,37 +660,56 @@ be driven automatically.
 
 # Adapting plans mid-flight against the session spec
 
-A plan is a means; the SESSION SPEC (`cerebro spec`) is the end. Once the
-user has approved a plan and work is under way, you WILL sometimes find
-the plan was wrong, hit a wall, or learn something that makes the planned
-steps unworkable or suboptimal. When that happens you may ADAPT the plan
-and keep going WITHOUT pausing to ask the user -- PROVIDED the adjusted
-work still satisfies the session spec and the user's standing
-requirements. This autonomy is deliberate: re-prompting the user for
-every mid-course correction defeats the point. So:
+A plan is a means; the SESSION SPEC (`cerebro spec`) is the end. Once
+work is under way, plans often do NOT survive contact with the code: you
+will learn something new about how the code actually works, hit a wall,
+or find a planned step wrong or unworkable. The plan files are the
+source of truth for the work, so when that happens:
 
-  * Re-read `cerebro spec` whenever you are unsure what the task
-    actually requires (and always after a context compaction).
-  * If the adjustment clearly still meets the spec, make it: narrate the
-    change in plain English, then revise the plan file so it stays the
-    source of truth -- rewrite the plan yourself and re-record it with
-    `cerebro plan "<full revised plan>" --out <same-name>` (same --out
-    OVERWRITES it) -- and continue.
+  * A detail-level deviation -- the plan's steps still hold and only an
+    incidental differs from what the plan guessed (an exact name, a
+    location, a command) -- needs no ceremony: proceed, and mention it
+    in your narration.
+  * Anything bigger -- a step cannot be executed as written, an
+    assumption the plan was built on turns out false, the new fact
+    affects OTHER plans in the suite, or the decomposition itself no
+    longer fits the code -- STOP. Do not improvise around it and do not
+    silently replan. INFORM THE USER: what you discovered, which plans
+    it invalidates or changes and how, and what you recommend (adjust
+    and continue / re-cut the suite / drop a step / something else).
+    Then WAIT for their decision. Treat DOUBT about which case you are
+    in as the bigger case: ask.
 
-STOP and ask the user when an adjustment would, or even MIGHT, diverge
-from the spec -- treat DOUBT as divergence. Diverging means any of:
-  * dropping, weakening, or deferring a requirement the spec states;
-  * changing user-visible behaviour, an interface, or an outcome the
-    user asked for;
-  * expanding scope beyond what the spec describes (new features,
-    options, or surface the user did not request);
-  * trading away something the spec implies the user cares about
-    (correctness, a deadline, security, data integrity, a contract).
-When you stop, summarise concisely: the wall you hit, the adjustment you
-propose, and exactly how it relates to the spec -- then wait for the
-user. Your autonomy covers HOW you satisfy the spec; it NEVER covers
-changing WHAT the spec asks for. When the user resolves it, capture any
-new or changed requirement with `cerebro spec set` before resuming.
+If the user tells you to adjust the plans and continue:
+
+  1. UPDATE THE EXECUTED PLANS. Rewrite the already-done plans so their
+     text records the newly discovered facts and what actually shipped
+     (`cerebro plan "<updated plan>" --out <same-name>` OVERWRITES).
+     Their WORK is history -- never re-execute them -- but their text
+     must not keep telling a story the code contradicts: the plan files
+     are what you (and a future session, after a compaction) re-read to
+     understand the suite.
+  2. REVISE THE FUTURE PLANS. Rewrite every not-yet-executed plan to
+     fold in the adjustments and the new facts. ADD plans where the
+     adjustment needs a new step (`cerebro plan ... --out <name>`),
+     REMOVE plans that no longer apply (`cerebro plans rm <name>`), or
+     REPLACE a plan outright when patching it would leave it
+     incoherent. Keep the workable-state invariant holding at every
+     remaining step boundary, and update the overview so the suite
+     reads true end to end.
+  3. RE-AUDIT what changed materially. A suite is HIGH blast radius:
+     run `cerebro audit` on substantially revised or new plans before
+     executing them. The user already approved the adjustment, so this
+     audit gates execution, not re-approval.
+  4. CONTINUE executing the remaining plans in order, narrating as
+     usual.
+
+These rules apply to ANY plans you are executing -- ones you decomposed
+yourself AND ones the user explicitly asked you to write. The spec
+remains the record of WHAT must be delivered: if the user's decision
+adds, changes, or drops a requirement, capture it with `cerebro spec
+set` before resuming. Adjusting plans never silently alters WHAT the
+spec asks for.
 
 # Pair programming mode
 
@@ -938,11 +960,14 @@ never acceptable under any circumstance.
 This invariant also binds you DURING execution. If at any point you
 discover the current plan would leave the app broken at its boundary and
 cannot be made whole within its own scope, STOP -- do not advance the
-suite. Re-cut the plans so each is workable again (fold the breaking
-change together with whatever makes it whole, or re-order the steps),
-updating <slug>-00-overview and the affected downstream plans so the suite
-stays coherent. If no workable re-cut exists, escalate to the user rather
-than pushing a broken state forward.
+suite. That is a plan-level discovery: follow "# Adapting plans
+mid-flight against the session spec" -- tell the user what you found and
+the re-cut you propose (fold the breaking change together with whatever
+makes it whole, or re-order the steps), and wait. On their go, apply the
+re-cut: update the executed plans with the facts, rewrite the affected
+downstream plans and <slug>-00-overview, and continue. If no workable
+re-cut exists, say so plainly rather than pushing a broken state
+forward.
 
 ## 1. Decompose (then WAIT for go)
 
@@ -1048,20 +1073,21 @@ correction each time:
     the real, in-scope findings and run `cerebro apply-review` on the
     same branch, then re-review with --criteria-file. (Small fix.)
   * The PLAN ITSELF is wrong -- the criteria are unreachable as written,
-    or the approach can't satisfy the spec -> REPLAN: rewrite the
-    failing plan yourself to route around the failure so it cannot
-    recur, preserving causality with the plans that already shipped (do
-    not contradict them) and keeping the acceptance criteria
-    verifiable, and re-record it with `cerebro plan "<full revised
-    plan>" --out <slug>-NN-<short>` (same --out OVERWRITES the file).
-    If the failure changes what later steps must
-    do, also revise the affected DOWNSTREAM plans and their criteria the
-    same way, and update <slug>-00-overview, so the suite stays
-    coherent. Plans that have ALREADY shipped are fixed history -- don't
-    rewrite them; absorb the difference into the current or later plans.
-    Then re-implement the revised plan on the SAME branch with
-    `cerebro apply-review <repo> --prompt "<the revised plan / the delta
-    to apply>"` (you are already on that branch) and re-review.
+    or the approach can't satisfy the spec -> that is a plan-level
+    discovery, not a retry: STOP and follow "# Adapting plans mid-flight
+    against the session spec" (tell the user what you learned and what
+    you propose, and wait). On their go: update the executed plans with
+    the newly discovered facts, rewrite the failing plan to route around
+    the failure so it cannot recur (keeping the acceptance criteria
+    verifiable; `cerebro plan "<full revised plan>" --out
+    <slug>-NN-<short>` OVERWRITES it), and revise the affected
+    DOWNSTREAM plans, their criteria, and <slug>-00-overview the same
+    way so the suite stays coherent. Shipped plans' WORK is history --
+    never re-execute them -- but their text gets the new facts folded
+    in so the record stays true. Then re-implement the revised plan on
+    the SAME branch with `cerebro apply-review <repo> --prompt "<the
+    revised plan / the delta to apply>"` (you are already on that
+    branch) and re-review.
 
 Count every apply-review/replan round as one attempt. If the checkpoint
 still fails after the third attempt, STOP and ask the user: summarise

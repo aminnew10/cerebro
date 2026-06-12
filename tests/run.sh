@@ -1964,6 +1964,32 @@ STDERR_CONTAINS="unknown arg" \
 run_case 163 "audit unknown arg rejected" 1 -- \
   "$CEREBRO_BIN" audit "$REPO" "$plan_out" --bogus
 
+# --- 164. plans rm deletes a plan dropped from a suite ---
+"$CEREBRO_BIN" plans rm my-plan >/dev/null 2>&1
+plans_list="$("$CEREBRO_BIN" plans 2>/dev/null)"
+if [[ ! -e "$plan_out" && "$plans_list" != *"my-plan.md"* ]]; then
+  printf 'PASS  164  plans rm deletes the plan file\n'; pass=$((pass + 1))
+else
+  printf 'FAIL  164  plans rm left the plan behind [list=%s]\n' "$plans_list"; fail=$((fail + 1))
+  failures+=("164 plans rm")
+fi
+
+# --- 165. plans rm: missing plan rejected ---
+STDERR_CONTAINS="no such plan" \
+run_case 165 "plans rm missing plan rejected" 1 -- "$CEREBRO_BIN" plans rm nope
+
+# --- 166. plans rm is confined to the session plans dir ---
+printf 'outside\n' > "$WORKDIR/outside.md"
+STDERR_CONTAINS="no such plan" \
+run_case 166 "plans rm path-confined to plans dir" 1 -- \
+  "$CEREBRO_BIN" plans rm "$WORKDIR/outside.md"
+if [[ -e "$WORKDIR/outside.md" ]]; then
+  printf 'PASS  166b plans rm did not touch a file outside the plans dir\n'; pass=$((pass + 1))
+else
+  printf 'FAIL  166b plans rm deleted an outside file\n'; fail=$((fail + 1))
+  failures+=("166b plans rm escaped the plans dir")
+fi
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 if (( fail > 0 )); then
   printf '\nFailures:\n'

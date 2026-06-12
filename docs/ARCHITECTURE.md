@@ -163,12 +163,19 @@ orchestrator can re-read (`cerebro spec`, `cerebro status`, plain
 can open any plan, transcript, or findings file in their editor.
 
 The **session spec** (`spec.md`) is the keystone of this decision: it
-is the requirements of record that authorises the orchestrator's
-mid-flight autonomy. The orchestrator may adapt *how* a plan satisfies
-the spec without re-asking; it may never change *what* the spec asks
-for. That rule is only enforceable because the spec survives on disk
-and every replacement archives the prior version to
-`spec-history.jsonl` first (`lib/commands/spec.sh`).
+is the requirements of record every plan adjustment is measured
+against. Plans are expected not to survive contact with the code:
+detail-level deviations proceed with a narration note, but a plan-level
+discovery (a step unworkable as written, a false assumption, a
+decomposition that no longer fits) stops the work — the orchestrator
+informs the user and waits. On "adjust and continue" it reconciles the
+whole plan set: already-executed plans get the newly discovered facts
+folded into their text (their work is never re-executed), future plans
+get the adjustments, and steps are added, removed (`cerebro plans rm`),
+or replaced as needed before execution resumes. The spec itself may
+never silently change; it survives on disk and every replacement
+archives the prior version to `spec-history.jsonl` first
+(`lib/commands/spec.sh`).
 
 ### 4. Session identity rides on claude's session id
 

@@ -40,11 +40,27 @@ cmd_plan() {
   echo "$out_path"
 }
 
-# ----- subcommand: cerebro plans -------------------------------------------
+# ----- subcommand: cerebro plans [rm <name>] --------------------------------
+# List the session's plan files, or remove one -- the orchestrator drops a
+# plan from a suite when a mid-flight revision makes a step obsolete, so the
+# stale file cannot be listed or executed later. Removal is confined to this
+# session's plans dir: the argument is reduced to its basename.
 
 cmd_plans() {
   require_session
   local plans_dir="$CEREBRO_SESSION_DIR/plans"
+  if [[ "${1:-}" == "rm" ]]; then
+    shift
+    local name="${1:-}"
+    [[ -n "$name" ]] || die "usage: cerebro plans rm <name>"
+    name="$(basename "${name%.md}")"
+    local f="$plans_dir/$name.md"
+    [[ -f "$f" ]] || die "plans rm: no such plan: $f"
+    rm -f "$f" || die "plans rm: cannot remove $f"
+    log_event "plan_removed" "$f"
+    say "cerebro: removed plan ($f)"
+    return 0
+  fi
   if [[ ! -d "$plans_dir" ]] || [[ -z "$(ls -A "$plans_dir" 2>/dev/null)" ]]; then
     echo "cerebro: no plans in this session"
     return 0
