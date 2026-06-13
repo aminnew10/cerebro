@@ -54,14 +54,13 @@ cmd_doc_write() {
 
   local sys_prompt; sys_prompt="$(child_sys_prompt doc-write)"
 
-  # Child-session continuity: doc-write stays on the current branch, keyed on
-  # repo+role+branch. A doc-write INTERRUPTED mid-run resumes its conversation
-  # instead of redoing the doc edits.
+  # Child-session continuity is only for interrupted/incomplete doc writes. A
+  # completed doc child must not be reused as the context for a later one.
   local store_file; store_file="$(child_sessions_file)"
   local dw_branch; dw_branch="$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null)"
   local ckey prior=""
   ckey="$(child_key "$repo" doc-write "${dw_branch:-default}")"
-  if prior="$(child_session_get "$ckey")" && [[ -n "$prior" ]] && child_session_fresh "$ckey"; then
+  if prior="$(child_session_get "$ckey")" && [[ -n "$prior" ]] && child_session_running_fresh "$ckey"; then
     :
   else
     prior=""
@@ -89,7 +88,7 @@ cmd_doc_write() {
     local run_opts=("${opts[@]}")
     [[ -n "$prior" ]] && run_opts+=(--resume "$prior")
     (( pair )) && run_opts+=("${PAIR_OPTS[@]}")
-    child_store_begin "$ckey" claude doc-write "$repo" "${dw_branch:-default}" "$child_log"
+    child_store_begin "$ckey" claude doc-write "$repo" "${dw_branch:-default}" "$child_log" "${prior:+preserve-id}"
     ( cd "$repo" && printf '%s' "$child_prompt" \
         | pair_feed "$pair" "$PAIR_FIFO" "$PAIR_STEER" "$child_log" "$PAIR_IDLE" "$PAIR_PGID" "$PAIR_STALL" "$PAIR_STALL_BUSY" \
         | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
@@ -110,6 +109,7 @@ cmd_doc_write() {
         pair_begin doc-write "$repo" "$dw_branch" "$child_log" ""
         retry_opts+=("${PAIR_OPTS[@]}")
       fi
+      child_store_begin "$ckey" claude doc-write "$repo" "${dw_branch:-default}" "$child_log"
       ( cd "$repo" && printf '%s' "$child_prompt" \
           | pair_feed "$pair" "$PAIR_FIFO" "$PAIR_STEER" "$child_log" "$PAIR_IDLE" "$PAIR_PGID" "$PAIR_STALL" "$PAIR_STALL_BUSY" \
           | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \

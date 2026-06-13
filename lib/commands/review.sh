@@ -46,18 +46,15 @@ cmd_review() {
   local state_dir="$CEREBRO_SESSION_DIR/review-state"
   local state_file="$state_dir/$repo_key.json"
 
-  # Child-session continuity: resume the same codex conversation for repeated
-  # reviews on the same branch -- including a review that was INTERRUPTED
-  # mid-run (its thread_id is persisted as soon as codex emits it). Keyed by
-  # repo+role+branch (role=review keeps it distinct from the execute
-  # conversation). A stale (over-TTL) stored id is ignored and falls back to a
-  # fresh run.
+  # Child-session continuity is only for interrupted/incomplete reviews. A
+  # cleanly finished review gets marked done, so a later review starts a fresh
+  # codex thread instead of inheriting stale reviewer context.
   local store_file; store_file="$(child_sessions_file)"
   local ckey="" prior="" review_branch
   review_branch="$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null)"
   if [[ -n "$review_branch" ]]; then
     ckey="$(child_key "$canonical_repo" review "$review_branch")"
-    if prior="$(child_session_get "$ckey")" && [[ -n "$prior" ]] && child_session_fresh "$ckey"; then
+    if prior="$(child_session_get "$ckey")" && [[ -n "$prior" ]] && child_session_running_fresh "$ckey"; then
       :
     else
       prior=""
@@ -176,7 +173,7 @@ $criteria_block
   # before it launches; codex_capture.py tees the stream to json_path AND
   # persists the thread_id the instant codex emits it, so an interrupt mid
   # run leaves a resumable record.
-  child_store_begin "$ckey" codex review "$repo" "${review_branch:-auto}" "$out_path"
+  child_store_begin "$ckey" codex review "$repo" "${review_branch:-auto}" "$out_path" "${prior:+preserve-id}"
   env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
     "${TIMEOUT_CMD[@]}" "$CEREBRO_CODEX_CMD" "${run_args[@]}" 2> "$err_path" \
     | python3 "$CEREBRO_LIB_DIR/python/codex_capture.py" "$json_path" "$store_file" "$ckey"
@@ -192,6 +189,7 @@ $criteria_block
     log_event "review_resume_failed" "rc=$rc resume=$prior; retrying fresh"
     warn "review: resume of $prior failed (rc=$rc); retrying without resume"
     : > "$json_path"
+    child_store_begin "$ckey" codex review "$repo" "${review_branch:-auto}" "$out_path"
     env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
       "${TIMEOUT_CMD[@]}" "$CEREBRO_CODEX_CMD" "${codex_opts[@]}" "$codex_prompt" 2> "$err_path" \
       | python3 "$CEREBRO_LIB_DIR/python/codex_capture.py" "$json_path" "$store_file" "$ckey"
@@ -341,15 +339,14 @@ cmd_apply_review() {
   local sys_prompt
   sys_prompt="$(child_sys_prompt apply-review)"
 
-  # Child-session continuity: apply-review stays on the current branch, so we
-  # key on repo+role+branch. Repeated apply-reviews on the same PR branch
-  # resume the same conversation -- and an apply-review INTERRUPTED mid-run
-  # resumes its half-applied work instead of starting over.
+  # Child-session continuity is only for interrupted/incomplete apply-review
+  # work. A completed fixer child must not be the starting context for another
+  # sub-agent on the same branch.
   local store_file; store_file="$(child_sessions_file)"
   local ar_branch; ar_branch="$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null)"
   local ckey prior=""
   ckey="$(child_key "$repo" apply-review "${ar_branch:-default}")"
-  if prior="$(child_session_get "$ckey")" && [[ -n "$prior" ]] && child_session_fresh "$ckey"; then
+  if prior="$(child_session_get "$ckey")" && [[ -n "$prior" ]] && child_session_running_fresh "$ckey"; then
     :
   else
     prior=""
@@ -390,7 +387,7 @@ cmd_apply_review() {
     local run_opts=("${opts[@]}")
     [[ -n "$prior" ]] && run_opts+=(--resume "$prior")
     (( pair )) && run_opts+=("${PAIR_OPTS[@]}")
-    child_store_begin "$ckey" claude apply-review "$repo" "${ar_branch:-default}" "$child_log"
+    child_store_begin "$ckey" claude apply-review "$repo" "${ar_branch:-default}" "$child_log" "${prior:+preserve-id}"
     ( cd "$repo" && printf '%s' "$child_prompt" \
         | pair_feed "$pair" "$PAIR_FIFO" "$PAIR_STEER" "$child_log" "$PAIR_IDLE" "$PAIR_PGID" "$PAIR_STALL" "$PAIR_STALL_BUSY" \
         | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
@@ -411,6 +408,7 @@ cmd_apply_review() {
         pair_begin apply-review "$repo" "$ar_branch" "$child_log" ""
         retry_opts+=("${PAIR_OPTS[@]}")
       fi
+      child_store_begin "$ckey" claude apply-review "$repo" "${ar_branch:-default}" "$child_log"
       ( cd "$repo" && printf '%s' "$child_prompt" \
           | pair_feed "$pair" "$PAIR_FIFO" "$PAIR_STEER" "$child_log" "$PAIR_IDLE" "$PAIR_PGID" "$PAIR_STALL" "$PAIR_STALL_BUSY" \
           | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \

@@ -127,9 +127,9 @@ orchestrator checks `cerebro status` for interrupted in-flight
 children and resumes each one — continuing half-done work via
 `--resume` instead of redoing it (and instead of duplicating commits).
 Stored ids stay resumable for `CEREBRO_CHILD_SESSION_TTL` seconds
-(default 24h); repeated execute/review/apply-review calls on the same
-repo+branch also resume the same underlying child conversation, so
-context accumulates across the loop.
+(default 24h), but normal child launches only auto-resume children still
+marked in-flight. Once a child finishes cleanly, the next sub-agent starts
+a fresh provider conversation even if it runs on the same repo and branch.
 
 A child that hits a genuine blocker doesn't guess and doesn't die: it
 **pauses with a question** as its closing message. The orchestrator

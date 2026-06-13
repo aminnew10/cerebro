@@ -20,15 +20,14 @@ touch_metadata() {
 }
 
 # ----- child agent session store -------------------------------------------
-# A small per-session JSON map of provider conversation ids + in-flight state
-# so repeated execute/review/apply-review/doc-write calls on the same line of
-# work resume the same underlying provider conversation -- and so a child that
-# was interrupted mid-run can be resumed on continue rather than redone. Keyed
-# by child_key (repo+role+branch). Each entry carries {id, provider, role,
-# repo, branch, log, status, started_at, updated_at}; status is "running"
-# until the child cleanly finishes (then "done"). The file is created lazily
-# on the first child_store_begin and lives alongside spec.md / metadata.json,
-# so it survives context compaction.
+# A small per-session JSON map of provider conversation ids + in-flight state.
+# Normal child launches only auto-resume entries still marked "running", which
+# means a completed sub-agent cannot bleed context into a later one. `cerebro
+# answer` is the explicit resume path for a child that stopped with a question.
+# Each entry carries {id, provider, role, repo, branch, log, status, started_at,
+# updated_at}; status is "running" until the child cleanly finishes (then
+# "done"). The file is created lazily on first child_store_begin and lives
+# alongside spec.md / metadata.json, so it survives context compaction.
 
 child_sessions_file() { printf '%s\n' "$CEREBRO_SESSION_DIR/child-sessions.json"; }
 
@@ -64,15 +63,43 @@ child_session_fresh() {
   child_store fresh "$1" "${CEREBRO_CHILD_SESSION_TTL:-86400}"
 }
 
+# child_session_running_fresh <key> -- like child_session_fresh, but only for
+# entries still marked running. Normal child launches use this so completed
+# children are never automatically reused by the next sub-agent.
+child_session_running_fresh() {
+  local f; f="$(child_sessions_file)"
+  [[ -f "$f" ]] || return 1
+  child_store running-fresh "$1" "${CEREBRO_CHILD_SESSION_TTL:-86400}"
+}
+
 # child_store_begin <key> <provider> <role> <repo> <branch> <log> -- mark a
 # child as in-flight (status=running) the moment before it launches, so an
-# interrupt mid-run leaves a discoverable, resumable record. Any id already
-# stored for <key> (from a prior run we are resuming) is preserved.
+# interrupt mid-run leaves a discoverable, resumable record. Pass a seventh
+# argument of "preserve-id" only when launching with an explicit provider
+# resume id; otherwise an old id for the same key is cleared.
 child_store_begin() {
   [[ -n "${1:-}" ]] || return 0
   local f; f="$(child_sessions_file)"
   [[ -f "$f" ]] || printf '{}\n' > "$f"
-  child_store begin "$1" "$2" "$3" "$4" "$5" "$6" "$(ts_iso)"
+  child_store begin "$1" "$2" "$3" "$4" "$5" "$6" "$(ts_iso)" "${7:-}"
+}
+
+# execute_child_disc <branch> <plan-path> <prompt-text> -- discriminator used
+# for execute child keys. The plan/prompt is always part of the key; the branch
+# narrows it when the orchestrator pins one. This keeps same-branch trunk-based
+# plan suites from sharing a provider conversation.
+execute_child_disc() {
+  local branch="${1:-}" plan_path="${2:-}" prompt_text="${3:-}" source_disc
+  if [[ -n "$plan_path" ]]; then
+    source_disc="plan:$plan_path"
+  else
+    source_disc="prompt:$prompt_text"
+  fi
+  if [[ -n "$branch" ]]; then
+    printf 'branch:%s|%s\n' "$branch" "$source_disc"
+  else
+    printf '%s\n' "$source_disc"
+  fi
 }
 
 # child_store_done <key> -- mark a child cleanly finished (status=done). An
@@ -101,4 +128,3 @@ child_store_list_running() {
   [[ -f "$f" ]] || return 0
   child_store list-running "${CEREBRO_CHILD_SESSION_TTL:-86400}"
 }
-

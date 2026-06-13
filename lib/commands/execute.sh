@@ -80,22 +80,15 @@ cmd_execute() {
     say "cerebro: executing inline prompt in $repo${base_branch:+ (base=$base_branch)}${new_branch:+ (branch=$new_branch)}"
   fi
 
-  # Child-session continuity: resume the same provider conversation for
-  # repeated executes on the same line of work -- and, crucially, for an
-  # execute that was INTERRUPTED mid-run (its id is persisted at startup, so
-  # the next call resumes the half-done work instead of redoing it). The key
-  # discriminator is --branch when given; without it we key on the plan path
-  # or the inline prompt so re-issuing the same command resumes the same
-  # conversation. A stale (over-TTL) stored id is ignored and falls back to a
-  # fresh run.
+  # Child-session continuity is only for incomplete work. A completed execute
+  # must not bleed provider context into the next sub-agent, even when a trunk
+  # based suite runs multiple plans on the same branch. The key always includes
+  # the plan/prompt; --branch narrows it but never replaces it.
   local store_file; store_file="$(child_sessions_file)"
-  local key_disc="${new_branch:-}"
-  if [[ -z "$key_disc" ]]; then
-    [[ -n "$plan_path" ]] && key_disc="plan:$plan_path" || key_disc="prompt:$prompt_text"
-  fi
+  local key_disc; key_disc="$(execute_child_disc "$new_branch" "$plan_path" "$prompt_text")"
   local ckey prior=""
   ckey="$(child_key "$repo" execute "$key_disc")"
-  if prior="$(child_session_get "$ckey")" && [[ -n "$prior" ]] && child_session_fresh "$ckey"; then
+  if prior="$(child_session_get "$ckey")" && [[ -n "$prior" ]] && child_session_running_fresh "$ckey"; then
     :
   else
     prior=""
@@ -150,7 +143,7 @@ cmd_execute() {
 
     # Mark the child in-flight (preserving any prior id we are resuming) BEFORE
     # it launches, so an interrupt now leaves a resumable record.
-    child_store_begin "$ckey" claude execute "$repo" "${new_branch:-auto}" "$child_log"
+    child_store_begin "$ckey" claude execute "$repo" "${new_branch:-auto}" "$child_log" "${prior:+preserve-id}"
     ( cd "$repo" && printf '%s' "$child_prompt" \
         | pair_feed "$pair" "$PAIR_FIFO" "$PAIR_STEER" "$child_log" "$PAIR_IDLE" "$PAIR_PGID" "$PAIR_STALL" "$PAIR_STALL_BUSY" \
         | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
@@ -171,6 +164,7 @@ cmd_execute() {
         pair_begin execute "$repo" "$new_branch" "$child_log" ""
         retry_opts+=("${PAIR_OPTS[@]}")
       fi
+      child_store_begin "$ckey" claude execute "$repo" "${new_branch:-auto}" "$child_log"
       ( cd "$repo" && printf '%s' "$child_prompt" \
           | pair_feed "$pair" "$PAIR_FIFO" "$PAIR_STEER" "$child_log" "$PAIR_IDLE" "$PAIR_PGID" "$PAIR_STALL" "$PAIR_STALL_BUSY" \
           | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \

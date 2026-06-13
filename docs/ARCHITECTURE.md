@@ -219,11 +219,13 @@ pausing a first-class protocol:
   `result` event text) and surfaces it under a
   `----- <role> child closing message -----` banner
   (`surface_child_reply()`).
-* `cerebro answer <repo> "<answer>" --role <role>` resumes the **same
-  provider conversation** (`claude --resume <id>`) with the answer as
-  the next turn, re-passing the identical role system prompt so the
-  child's constraints stay intact. The child continues from where it
-  paused; no work is redone.
+* `cerebro answer <repo> "<answer>" --role <role>` is the explicit
+  bridge back into that child. It resolves the stored child record inside
+  the current cerebro session and resumes the **same provider
+  conversation** (`claude --resume <id>`) with the answer as the next
+  turn, re-passing the identical role system prompt so the child's
+  constraints stay intact. The child continues from where it paused; no
+  work is redone.
 
 The orchestrator's policy (system prompt) layers on top: answer from
 the spec/plan/recall when the record settles it, relay to the user only
@@ -232,9 +234,10 @@ when the decision is genuinely theirs.
 ### 6. Resumability: persist the child id at start, not at exit
 
 `sessions/<id>/child-sessions.json` maps a **child key** — sha1 of
-`repo + role + discriminator` (branch, plan path, inline prompt, or
-audit output name) — to `{id, provider, role, repo, branch, log, status,
-started_at, updated_at}`.
+`repo + role + discriminator` (for execute, branch plus plan path or
+inline prompt; for branch-local roles, branch; for audit, output name) —
+to `{id, provider, role, repo, branch, log, status, started_at,
+updated_at}`.
 
 Two timing decisions make interruption safe:
 
@@ -248,6 +251,12 @@ Two timing decisions make interruption safe:
   and the orchestrator's resume policy is to re-issue the same command,
   which finds the stored id and adds `--resume`.
 * `child_store_done` flips it to `done` only on clean exit.
+
+Normal child launches only auto-resume fresh entries still marked
+`running`. A later plan on the same branch therefore gets a fresh
+provider conversation. `cerebro answer` is intentionally different: it is
+not a new child launch, it is the explicit pause/answer bridge and may
+resume the stored provider id for the child that asked the question.
 
 Resume has a deliberately asymmetric fallback (`cmd_execute`,
 `cmd_apply_review`, `cmd_review`): if a `--resume` is rejected up front

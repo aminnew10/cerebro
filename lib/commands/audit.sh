@@ -41,14 +41,12 @@ cmd_audit() {
   local out_path="$audits_dir/$out_name.md"
   local err_path="${out_path%.md}.err"
 
-  # Child-session continuity: resume the same codex conversation when the
-  # same plan is re-audited after a revision, so the auditor keeps its
-  # earlier exploration. Keyed by repo+role+out_name. A stale (over-TTL)
-  # stored id is ignored and falls back to a fresh run.
+  # Child-session continuity is only for interrupted/incomplete audits. A
+  # cleanly finished audit gets marked done; re-auditing starts fresh.
   local store_file; store_file="$(child_sessions_file)"
   local ckey prior=""
   ckey="$(child_key "$repo" audit "$out_name")"
-  if prior="$(child_session_get "$ckey")" && [[ -n "$prior" ]] && child_session_fresh "$ckey"; then
+  if prior="$(child_session_get "$ckey")" && [[ -n "$prior" ]] && child_session_running_fresh "$ckey"; then
     :
   else
     prior=""
@@ -101,7 +99,7 @@ $context
   else
     run_args=("${codex_opts[@]}" "$audit_prompt")
   fi
-  child_store_begin "$ckey" codex audit "$repo" "$out_name" "$out_path"
+  child_store_begin "$ckey" codex audit "$repo" "$out_name" "$out_path" "${prior:+preserve-id}"
   env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
     "${TIMEOUT_CMD[@]}" "$CEREBRO_CODEX_CMD" "${run_args[@]}" 2> "$err_path" \
     | python3 "$CEREBRO_LIB_DIR/python/codex_capture.py" "$json_path" "$store_file" "$ckey"
@@ -116,6 +114,7 @@ $context
     log_event "audit_resume_failed" "rc=$rc resume=$prior; retrying fresh"
     warn "audit: resume of $prior failed (rc=$rc); retrying without resume"
     : > "$json_path"
+    child_store_begin "$ckey" codex audit "$repo" "$out_name" "$out_path"
     env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
       "${TIMEOUT_CMD[@]}" "$CEREBRO_CODEX_CMD" "${codex_opts[@]}" "$audit_prompt" 2> "$err_path" \
       | python3 "$CEREBRO_LIB_DIR/python/codex_capture.py" "$json_path" "$store_file" "$ckey"

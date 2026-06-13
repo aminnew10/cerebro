@@ -51,7 +51,11 @@ def store_upsert(f, key, fields):
             fcntl.flock(lf, fcntl.LOCK_EX)
         data = _load(f)
         entry = data.get(key) or {}
-        entry.update(fields)
+        for k, v in fields.items():
+            if v is None:
+                entry.pop(k, None)
+            else:
+                entry[k] = v
         data[key] = entry
         _atomic_write(f, data)
     finally:

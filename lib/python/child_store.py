@@ -4,6 +4,7 @@
 #   done <key> <ts>                                            -- mark finished
 #   get <key>                  -- print the stored id (empty if none)
 #   fresh <key> <ttl>          -- exit 0 if updated_at within ttl, else 1
+#   running-fresh <key> <ttl>  -- exit 0 if status=running and fresh
 #   list-running <ttl>         -- TSV of still-fresh status=running entries
 #   match <ttl> <role> <repo>  -- TSV of still-fresh entries with an id
 import os, sys
@@ -16,9 +17,13 @@ f = sys.argv[1]
 op = sys.argv[2]
 if op == "begin":
     key, provider, role, repo, branch, log, ts = sys.argv[3:10]
-    store_upsert(f, key, {"provider": provider, "role": role, "repo": repo,
-                          "branch": branch, "log": log, "status": "running",
-                          "started_at": ts, "updated_at": ts})
+    preserve_id = len(sys.argv) > 10 and sys.argv[10] == "preserve-id"
+    fields = {"provider": provider, "role": role, "repo": repo,
+              "branch": branch, "log": log, "status": "running",
+              "started_at": ts, "updated_at": ts}
+    if not preserve_id:
+        fields["id"] = None
+    store_upsert(f, key, fields)
 elif op == "set-id":
     key, provider, cid, ts = sys.argv[3:7]
     if cid:
@@ -33,6 +38,11 @@ elif op == "fresh":
     e = _load(f).get(sys.argv[3]) or {}
     ts = e.get("updated_at") or ""
     sys.exit(0 if (ts and _fresh(ts, int(sys.argv[4]))) else 1)
+elif op == "running-fresh":
+    e = _load(f).get(sys.argv[3]) or {}
+    ts = e.get("updated_at") or ""
+    sys.exit(0 if (e.get("status") == "running" and ts
+                   and _fresh(ts, int(sys.argv[4]))) else 1)
 elif op == "list-running":
     ttl = int(sys.argv[3])
     for key, e in _load(f).items():

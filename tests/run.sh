@@ -1116,8 +1116,8 @@ fi
 
 # ========================================================================
 # 125-128. Child agent session persistence. A stub claude/codex emits its
-# session id; cerebro stores it under child-sessions.json keyed by
-# repo+role+branch and resumes it on the next call for the same line of work.
+# session id; cerebro stores it under child-sessions.json, does not reuse
+# completed child sessions, and resumes only entries left in status=running.
 # ========================================================================
 if (( STUB_OK )); then
   # claude stub variant: emit an init event carrying a session_id, then a
@@ -1135,11 +1135,15 @@ EOF
   ID_STUB_PATH="$ID_STUB_DIR:$PATH"
 
   ESESS="exec-session"; EDIR="$CEREBRO_HOME/sessions/$ESESS"
-  mkdir -p "$EDIR/children"; : > "$EDIR/transcript.jsonl"
+  mkdir -p "$EDIR/children" "$EDIR/plans"; : > "$EDIR/transcript.jsonl"
+  EPLAN1="$EDIR/plans/plan-one.md"
+  EPLAN2="$EDIR/plans/plan-two.md"
+  printf 'plan one\n' > "$EPLAN1"
+  printf 'plan two\n' > "$EPLAN2"
 
   # --- 125. execute with --branch captures the child session id ---
   env PATH="$ID_STUB_PATH" CEREBRO_SESSION_ID="$ESESS" \
-    "$CEREBRO_BIN" execute "$REPO" --prompt "do the thing" --branch feat/test \
+    "$CEREBRO_BIN" execute "$REPO" "$EPLAN1" --branch feat/test \
     >/dev/null 2>&1
   exec_id="$(jq -r '.[].id' "$EDIR/child-sessions.json" 2>/dev/null)"
   if [[ "$exec_id" == "STUBSESSION-1111" ]]; then
@@ -1157,15 +1161,29 @@ EOF
     failures+=("125b resume=none missing")
   fi
 
-  # --- 126. a second execute on the same repo+branch resumes the stored id ---
+  # --- 126. a second plan on the same repo+branch does not resume plan one's id ---
   env PATH="$ID_STUB_PATH" CEREBRO_SESSION_ID="$ESESS" \
-    "$CEREBRO_BIN" execute "$REPO" --prompt "do more" --branch feat/test \
+    "$CEREBRO_BIN" execute "$REPO" "$EPLAN2" --branch feat/test \
     >/dev/null 2>&1
-  if grep -q 'resume=STUBSESSION-1111' "$EDIR/transcript.jsonl"; then
-    printf 'PASS  126  second execute resumes the stored session\n'; pass=$((pass + 1))
+  exec_entries="$(jq 'length' "$EDIR/child-sessions.json" 2>/dev/null)"
+  if [[ "$exec_entries" -eq 2 ]] && ! grep -q 'resume=STUBSESSION-1111' "$EDIR/transcript.jsonl"; then
+    printf 'PASS  126  same-branch second plan starts its own child session\n'; pass=$((pass + 1))
   else
-    printf 'FAIL  126  second execute did not resume stored session\n'; fail=$((fail + 1))
-    failures+=("126 resume not logged")
+    printf 'FAIL  126  same-branch plan reused a child [entries=%s transcript=%s]\n' \
+      "$exec_entries" "$(cat "$EDIR/transcript.jsonl")"; fail=$((fail + 1))
+    failures+=("126 same-branch plan isolation")
+  fi
+
+  # --- 126b. re-running a completed execute key also starts fresh. ---
+  env PATH="$ID_STUB_PATH" CEREBRO_SESSION_ID="$ESESS" \
+    "$CEREBRO_BIN" execute "$REPO" "$EPLAN1" --branch feat/test \
+    >/dev/null 2>&1
+  if ! grep -q 'resume=STUBSESSION-1111' "$EDIR/transcript.jsonl"; then
+    printf 'PASS  126b completed execute child is not auto-resumed\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  126b completed execute child was resumed [transcript=%s]\n' \
+      "$(cat "$EDIR/transcript.jsonl")"; fail=$((fail + 1))
+    failures+=("126b completed execute auto-resume")
   fi
   # --- 129. stale fallback: a stored id the provider rejects retries fresh
   # (without --resume) and overwrites the store with the new id. ---
@@ -1189,11 +1207,12 @@ EOF
 
   FSESS="fallback-session"; FDIR="$CEREBRO_HOME/sessions/$FSESS"
   mkdir -p "$FDIR/children"; : > "$FDIR/transcript.jsonl"
-  # Seed a bogus-but-fresh stored id for the execute key (repo+execute+branch)
-  # so it passes the TTL check and is actually offered for resume.
-  FKEY="$(printf '%s\0execute\0feat/test' "$REPO" | shasum | cut -d' ' -f1 | cut -c1-16)"
-  jq -n --arg k "$FKEY" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-     '{($k): {id:"BOGUS-OLD", provider:"claude", updated_at:$ts}}' \
+  # Seed a bogus-but-fresh running id for the execute key so it is offered
+  # for resume. Completed entries are intentionally ignored.
+  FKEY="$(printf '%s\0execute\0branch:feat/test|prompt:go' "$REPO" | shasum | cut -d' ' -f1 | cut -c1-16)"
+  jq -n --arg k "$FKEY" --arg repo "$REPO" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+     '{($k): {id:"BOGUS-OLD", provider:"claude", role:"execute", repo:$repo,
+              branch:"feat/test", status:"running", updated_at:$ts}}' \
      > "$FDIR/child-sessions.json"
   env PATH="$REJECT_STUB_PATH" CEREBRO_SESSION_ID="$FSESS" \
     "$CEREBRO_BIN" execute "$REPO" --prompt "go" --branch feat/test >/dev/null 2>&1
@@ -1231,10 +1250,11 @@ EOF
 
   WSESS="realfail-session"; WDIR="$CEREBRO_HOME/sessions/$WSESS"
   mkdir -p "$WDIR/children"; : > "$WDIR/transcript.jsonl"
-  # Seed a fresh stored id so resume is attempted.
-  WKEY="$(printf '%s\0execute\0feat/test' "$REPO" | shasum | cut -d' ' -f1 | cut -c1-16)"
-  jq -n --arg k "$WKEY" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-     '{($k): {id:"PRIOR-1234", provider:"claude", updated_at:$ts}}' \
+  # Seed a fresh running stored id so resume is attempted.
+  WKEY="$(printf '%s\0execute\0branch:feat/test|prompt:go' "$REPO" | shasum | cut -d' ' -f1 | cut -c1-16)"
+  jq -n --arg k "$WKEY" --arg repo "$REPO" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+     '{($k): {id:"PRIOR-1234", provider:"claude", role:"execute", repo:$repo,
+              branch:"feat/test", status:"running", updated_at:$ts}}' \
      > "$WDIR/child-sessions.json"
   : > "$WORK_COUNT"
   env PATH="$WORK_STUB_PATH" CEREBRO_SESSION_ID="$WSESS" \
@@ -1255,7 +1275,8 @@ EOF
 else
   printf 'SKIP  125  execute child-session capture (claude stub unavailable)\n'
   printf 'SKIP  125b execute resume=none log (claude stub unavailable)\n'
-  printf 'SKIP  126  execute child-session resume (claude stub unavailable)\n'
+  printf 'SKIP  126  same-branch execute isolation (claude stub unavailable)\n'
+  printf 'SKIP  126b completed execute no-auto-resume (claude stub unavailable)\n'
   printf 'SKIP  129  execute stale fallback (claude stub unavailable)\n'
   printf 'SKIP  130  execute mutating-resume no-rerun (claude stub unavailable)\n'
 fi
@@ -1332,22 +1353,22 @@ if [[ -x "$CODEX_STUB_DIR/codex" ]]; then
     failures+=("127d criteria external guidance missing")
   fi
 
-  # --- 128. a second review resumes the stored codex session ---
+  # --- 128. a second completed review does not resume the stored codex session ---
   : > "$CODEX_ARGV_LOG"
   env PATH="$CODEX_STUB_PATH" CEREBRO_SESSION_ID="$RSESS" CEREBRO_CODEX_CMD=codex \
     "$CEREBRO_BIN" review "$REPO" >/dev/null 2>&1
-  if grep -q "resume=$CX_TID" "$RDIR/transcript.jsonl"; then
-    printf 'PASS  128  second review resumes the stored codex session\n'; pass=$((pass + 1))
+  if ! grep -q "resume=$CX_TID" "$RDIR/transcript.jsonl"; then
+    printf 'PASS  128  completed review thread is not auto-resumed\n'; pass=$((pass + 1))
   else
-    printf 'FAIL  128  second review did not resume codex session\n'; fail=$((fail + 1))
-    failures+=("128 review resume not logged")
+    printf 'FAIL  128  completed review thread was resumed\n'; fail=$((fail + 1))
+    failures+=("128 review completed auto-resume")
   fi
-  # --- 128b. re-review actually runs `codex exec resume <thread_id>` ---
-  if grep -q "resume $CX_TID" "$CODEX_ARGV_LOG"; then
-    printf 'PASS  128b  re-review runs codex exec resume <thread_id>\n'; pass=$((pass + 1))
+  # --- 128b. re-review invokes codex fresh, without `exec resume <thread_id>` ---
+  if ! grep -q "resume $CX_TID" "$CODEX_ARGV_LOG"; then
+    printf 'PASS  128b re-review does not pass resume <thread_id>\n'; pass=$((pass + 1))
   else
-    printf 'FAIL  128b  re-review did not pass resume <thread_id> [argv=%s]\n' "$(cat "$CODEX_ARGV_LOG")"; fail=$((fail + 1))
-    failures+=("128b review resume argv missing")
+    printf 'FAIL  128b re-review passed resume <thread_id> [argv=%s]\n' "$(cat "$CODEX_ARGV_LOG")"; fail=$((fail + 1))
+    failures+=("128b review resume argv present")
   fi
   # --- 128c. audit runs codex read-only on the plan and echoes findings ---
   audit_plan="$(env CEREBRO_SESSION_ID="$RSESS" \
@@ -1369,25 +1390,25 @@ if [[ -x "$CODEX_STUB_DIR/codex" ]]; then
     failures+=("128c audit codex :: out=$audit_out id=$audit_id")
   fi
 
-  # --- 128d. a re-audit of the same plan resumes the stored codex thread ---
+  # --- 128d. a re-audit of the same completed plan starts a fresh codex thread ---
   : > "$CODEX_ARGV_LOG"
   env PATH="$CODEX_STUB_PATH" CEREBRO_SESSION_ID="$RSESS" CEREBRO_CODEX_CMD=codex \
     "$CEREBRO_BIN" audit "$REPO" "$audit_plan" >/dev/null 2>&1
-  if grep -q "resume $CX_TID" "$CODEX_ARGV_LOG"; then
-    printf 'PASS  128d  re-audit runs codex exec resume <thread_id>\n'; pass=$((pass + 1))
+  if ! grep -q "resume $CX_TID" "$CODEX_ARGV_LOG"; then
+    printf 'PASS  128d re-audit does not pass resume <thread_id>\n'; pass=$((pass + 1))
   else
-    printf 'FAIL  128d  re-audit did not pass resume <thread_id> [argv=%s]\n' "$(cat "$CODEX_ARGV_LOG")"; fail=$((fail + 1))
-    failures+=("128d audit resume argv missing")
+    printf 'FAIL  128d re-audit passed resume <thread_id> [argv=%s]\n' "$(cat "$CODEX_ARGV_LOG")"; fail=$((fail + 1))
+    failures+=("128d audit resume argv present")
   fi
 else
   printf 'SKIP  127  review codex-session capture (codex stub unavailable)\n'
   printf 'SKIP  127b review codex --json (codex stub unavailable)\n'
   printf 'SKIP  127c review codex tool limits (codex stub unavailable)\n'
   printf 'SKIP  127d review external criteria guidance (codex stub unavailable)\n'
-  printf 'SKIP  128  review codex-session resume (codex stub unavailable)\n'
-  printf 'SKIP  128b review codex resume argv (codex stub unavailable)\n'
+  printf 'SKIP  128  review completed no-auto-resume (codex stub unavailable)\n'
+  printf 'SKIP  128b review fresh argv (codex stub unavailable)\n'
   printf 'SKIP  128c audit codex run (codex stub unavailable)\n'
-  printf 'SKIP  128d audit codex resume (codex stub unavailable)\n'
+  printf 'SKIP  128d audit completed no-auto-resume (codex stub unavailable)\n'
 fi
 
 # ========================================================================
@@ -1832,34 +1853,32 @@ if (( STUB_OK )); then
     failures+=("140 done status :: status=$dstatus")
   fi
 
-  # --- 143. apply-review resumes the stored conversation on the same branch:
-  # a second apply-review on the same repo+branch logs resume=<id>. ---
+  # --- 143. apply-review does not auto-resume a completed same-branch child. ---
   ARSESS="apply-resume-session"; ARDIR="$CEREBRO_HOME/sessions/$ARSESS"
   mkdir -p "$ARDIR/children"; : > "$ARDIR/transcript.jsonl"
   env PATH="$ID_STUB_PATH" CEREBRO_SESSION_ID="$ARSESS" \
     "$CEREBRO_BIN" apply-review "$REPO" --prompt "first fix" >/dev/null 2>&1
   env PATH="$ID_STUB_PATH" CEREBRO_SESSION_ID="$ARSESS" \
     "$CEREBRO_BIN" apply-review "$REPO" --prompt "second fix" >/dev/null 2>&1
-  if grep -q 'resume=STUBSESSION-1111' "$ARDIR/transcript.jsonl"; then
-    printf 'PASS  143  second apply-review resumes the stored conversation\n'; pass=$((pass + 1))
+  if ! grep -q 'resume=STUBSESSION-1111' "$ARDIR/transcript.jsonl"; then
+    printf 'PASS  143  completed apply-review child is not auto-resumed\n'; pass=$((pass + 1))
   else
-    printf 'FAIL  143  apply-review did not resume [transcript=%s]\n' "$(cat "$ARDIR/transcript.jsonl")"; fail=$((fail + 1))
-    failures+=("143 apply-review resume")
+    printf 'FAIL  143  apply-review resumed a completed child [transcript=%s]\n' "$(cat "$ARDIR/transcript.jsonl")"; fail=$((fail + 1))
+    failures+=("143 apply-review completed auto-resume")
   fi
 
-  # --- 144. doc-write likewise resumes the stored conversation on the same
-  # branch on a second call. ---
+  # --- 144. doc-write likewise starts fresh after a completed same-branch child. ---
   DWSESS="doc-resume-session"; DWDIR="$CEREBRO_HOME/sessions/$DWSESS"
   mkdir -p "$DWDIR/children"; : > "$DWDIR/transcript.jsonl"
   env PATH="$ID_STUB_PATH" CEREBRO_SESSION_ID="$DWSESS" \
     "$CEREBRO_BIN" doc-write "$REPO" --prompt "doc pass one" >/dev/null 2>&1
   env PATH="$ID_STUB_PATH" CEREBRO_SESSION_ID="$DWSESS" \
     "$CEREBRO_BIN" doc-write "$REPO" --prompt "doc pass two" >/dev/null 2>&1
-  if grep -q 'resume=STUBSESSION-1111' "$DWDIR/transcript.jsonl"; then
-    printf 'PASS  144  second doc-write resumes the stored conversation\n'; pass=$((pass + 1))
+  if ! grep -q 'resume=STUBSESSION-1111' "$DWDIR/transcript.jsonl"; then
+    printf 'PASS  144  completed doc-write child is not auto-resumed\n'; pass=$((pass + 1))
   else
-    printf 'FAIL  144  doc-write did not resume [transcript=%s]\n' "$(cat "$DWDIR/transcript.jsonl")"; fail=$((fail + 1))
-    failures+=("144 doc-write resume")
+    printf 'FAIL  144  doc-write resumed a completed child [transcript=%s]\n' "$(cat "$DWDIR/transcript.jsonl")"; fail=$((fail + 1))
+    failures+=("144 doc-write completed auto-resume")
   fi
 else
   for t in 140 143 144; do
@@ -1912,6 +1931,34 @@ if (( STUB_OK )); then
   else
     printf 'FAIL  155  answer did not surface closing message [out=%s]\n' "$ans_out"; fail=$((fail + 1))
     failures+=("155 answer surface :: out=$ans_out")
+  fi
+
+  # --- 155b. answer can target the exact execute child when several plans
+  # share one branch. This preserves the pause/answer workflow after execute
+  # keys include branch+plan for same-branch plan isolation. ---
+  AXSESS="answer-exact-session"; AXDIR="$CEREBRO_HOME/sessions/$AXSESS"
+  mkdir -p "$AXDIR/children" "$AXDIR/plans"; : > "$AXDIR/transcript.jsonl"
+  AXP1="$AXDIR/plans/one.md"; AXP2="$AXDIR/plans/two.md"
+  printf 'one\n' > "$AXP1"; printf 'two\n' > "$AXP2"
+  AXK1="$(printf '%s\0execute\0branch:feat/ans|plan:%s' "$REPO" "$AXP1" | shasum | cut -d' ' -f1 | cut -c1-16)"
+  AXK2="$(printf '%s\0execute\0branch:feat/ans|plan:%s' "$REPO" "$AXP2" | shasum | cut -d' ' -f1 | cut -c1-16)"
+  jq -n --arg k1 "$AXK1" --arg k2 "$AXK2" --arg repo "$REPO" \
+        --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{($k1): {id:"CHILD-ONE", provider:"claude", role:"execute", repo:$repo,
+                  branch:"feat/ans", status:"done", updated_at:$ts},
+          ($k2): {id:"CHILD-TWO", provider:"claude", role:"execute", repo:$repo,
+                  branch:"feat/ans", status:"done", updated_at:$ts}}' \
+        > "$AXDIR/child-sessions.json"
+  env PATH="$ID_STUB_PATH" CEREBRO_SESSION_ID="$AXSESS" \
+    "$CEREBRO_BIN" answer "$REPO" "use option B" --role execute \
+      --branch feat/ans --plan "$AXP2" >/dev/null 2>&1
+  if grep -q 'resume=CHILD-TWO' "$AXDIR/transcript.jsonl" \
+     && ! grep -q 'resume=CHILD-ONE' "$AXDIR/transcript.jsonl"; then
+    printf 'PASS  155b answer targets exact same-branch plan child\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  155b answer did not target exact child [transcript=%s]\n' \
+      "$(cat "$AXDIR/transcript.jsonl")"; fail=$((fail + 1))
+    failures+=("155b answer exact child")
   fi
 
   # --- 156. answer --role audit rejected (audit children are codex,

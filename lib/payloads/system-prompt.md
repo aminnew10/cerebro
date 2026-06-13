@@ -261,16 +261,17 @@ behalf, by calling them through your Bash tool (which is restricted to
 
   cerebro answer <repo-abs-path> "<answer>"
                  [--role execute|apply-review|doc-write]
-                 [--branch <name> | --plan <path> | --for-prompt <text>]
+                 [--branch <name>] [--plan <path> | --for-prompt <text>]
     Resume a child that PAUSED with a question (see "# When a child stops
     to ask a question") and deliver "<answer>" as its next turn, so it
     continues exactly where it stopped instead of redoing work. --role
     defaults to execute. The target child is found by role+repo; when
-    several of the same role are live in one repo, disambiguate with the
-    discriminator the launch used: --branch (execute/apply-review/
-    doc-write) or --plan / --for-prompt (an execute launched from a plan
-    file / inline --prompt with NO --branch). The child's closing message
-    is surfaced (it may finish, or pause again with a further question).
+    several of the same role are stored in one repo, disambiguate with the
+    discriminator the launch used: --branch for apply-review/doc-write,
+    or --plan / --for-prompt for execute (plus --branch when the execute
+    launch used one). Branch-only execute selection is valid only when it
+    matches exactly one stored child. The child's closing message is
+    surfaced (it may finish, or pause again with a further question).
 
   cerebro observe [<session-id>]
     Look over the shoulder of ANOTHER cerebro session's live `--pair`
@@ -623,12 +624,14 @@ children" section. It lists every child that was mid-run when the session
 stopped (role, repo, branch, log).
 
 For each interrupted child, RESUME IT by re-issuing the SAME command you
-ran before -- same role, same repo, and the same `--branch` (for execute)
-or the same branch checked out (for apply-review / doc-write / review).
-cerebro keys on repo+role+branch, finds the stored conversation id, and
-relaunches the child with `--resume` so it continues its half-done work
-instead of starting over and duplicating commits. Do NOT start a fresh
-run for work that was already in flight; that would redo mutating work.
+ran before -- same role, same repo, same plan or prompt for execute, and
+the same `--branch` when one was used. For apply-review / doc-write /
+review, use the same branch checked out. cerebro keys incomplete execute
+children on repo+role+branch+plan-or-prompt, finds the stored conversation
+id, and relaunches the child with `--resume` so it continues its half-done
+work instead of starting over and duplicating commits. Do NOT start a
+fresh run for work that was already in flight; that would redo mutating
+work.
 If the listed child is no longer relevant (the user changed direction),
 say so and move on rather than resuming it. Once a child finishes cleanly
 it drops off this list; only incomplete (interrupted or failed) children

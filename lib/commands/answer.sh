@@ -10,11 +10,10 @@
 # turn, so it continues where it paused instead of redoing work.
 #
 # The target child is identified by role+repo. When several children of the
-# same role are live in one repo (e.g. stacked execute branches), pass the
-# discriminator the launch used: --branch (execute/apply-review/doc-write)
-# or --plan / --for-prompt (execute launched from a plan file / inline prompt
-# with no --branch). With no discriminator and exactly one resumable session
-# of that role in the repo, that one is used.
+# same role are stored in one repo, pass the discriminator the launch used:
+# --branch for apply-review/doc-write, or --plan / --for-prompt for execute
+# (plus --branch when the execute launch used one). Branch-only execute
+# selection is accepted only when it matches exactly one stored child.
 cmd_answer() {
   require_session
   build_timeout_cmd
@@ -38,7 +37,7 @@ cmd_answer() {
   done
 
   [[ -n "$repo" ]] \
-    || die "usage: cerebro answer <repo-abs-path> \"<answer>\" [--role execute|apply-review|doc-write] [--branch <name> | --plan <path> | --for-prompt <text>]"
+    || die "usage: cerebro answer <repo-abs-path> \"<answer>\" [--role execute|apply-review|doc-write] [--branch <name>] [--plan <path> | --for-prompt <text>]"
   [[ "$repo" = /* ]] || die "answer: repo path must be absolute: $repo"
   [[ -d "$repo" ]] || die "answer: repo not a directory: $repo"
   [[ -n "$answer" ]] || die "answer: empty answer (pass the answer text as the second argument or via --message)"
@@ -47,19 +46,25 @@ cmd_answer() {
     *) die "answer: unknown role: $role (expected execute|apply-review|doc-write)" ;;
   esac
 
-  # Build the launch discriminator the original command keyed on, when the
-  # orchestrator passed one. Left empty -> auto-match by role+repo below.
-  local disc=""
+  if [[ -n "$plan_path" && -n "$for_prompt" ]]; then
+    die "answer: pass either --plan or --for-prompt, not both"
+  fi
+
+  # Build the launch discriminator the original command keyed on, when it is
+  # exact. Left empty -> match by role+repo, optionally filtered by branch.
+  local disc="" branch_filter=""
   case "$role" in
     execute)
-      if   [[ -n "$branch" ]];     then disc="$branch"
-      elif [[ -n "$plan_path" ]];  then disc="plan:$plan_path"
-      elif [[ -n "$for_prompt" ]]; then disc="prompt:$for_prompt"
-      fi ;;
+      if [[ -n "$plan_path" || -n "$for_prompt" ]]; then
+        disc="$(execute_child_disc "$branch" "$plan_path" "$for_prompt")"
+      elif [[ -n "$branch" ]]; then
+        branch_filter="$branch"
+      fi
+      ;;
     apply-review|doc-write) [[ -n "$branch" ]] && disc="$branch" ;;
   esac
 
-  # Resolve the kept session: explicit discriminator -> exact key; otherwise
+  # Resolve the kept session: exact discriminator -> exact key; otherwise
   # auto-match the single resumable session of this role in the repo.
   local ckey="" prior="" label=""
   if [[ -n "$disc" ]]; then
@@ -72,11 +77,14 @@ cmd_answer() {
   else
     local rows n
     rows="$(child_session_match "$role" "$repo")"
+    if [[ -n "$branch_filter" ]]; then
+      rows="$(printf '%s\n' "$rows" | awk -F '\t' -v b="$branch_filter" '$3 == b')"
+    fi
     n="$(printf '%s' "$rows" | grep -c .)"
     if (( n == 0 )); then
       die "answer: no resumable $role session found in $repo (the child may never have run, or its session expired)."
     elif (( n > 1 )); then
-      { printf 'cerebro: answer: several %s sessions in %s -- pass --branch/--out to pick one:\n' "$role" "$repo"
+      { printf 'cerebro: answer: several %s sessions in %s -- pass a more specific discriminator:\n' "$role" "$repo"
         while IFS=$'\t' read -r _k _id _br _st _up; do
           [[ -z "$_k" ]] && continue
           printf '  %s (status=%s, updated=%s)\n' "$_br" "$_st" "$_up"
@@ -110,7 +118,7 @@ cmd_answer() {
   local rc result_path="" msg_capture=""
   msg_capture="$(mktemp)"; result_path="$msg_capture"
 
-  child_store_begin "$ckey" claude "$role" "$repo" "$label" "$child_log"
+  child_store_begin "$ckey" claude "$role" "$repo" "$label" "$child_log" preserve-id
   ( cd "$repo" && printf '%s' "$child_prompt" \
       | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
         "${TIMEOUT_CMD[@]}" claude "${opts[@]}" 2>/dev/null \
