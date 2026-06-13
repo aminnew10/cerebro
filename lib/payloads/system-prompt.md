@@ -182,9 +182,17 @@ behalf, by calling them through your Bash tool (which is restricted to
     forks from and targets (so plan 2 stacks on plan 1's branch instead
     of main), and --branch pins the new branch's exact name so you know
     it deterministically and can pass it as the next plan's --base. Omit
-    both for a normal standalone PR off the repo's default base. If the
-    plan file ends with an acceptance-criteria checkpoint, the child
-    implements to meet it and self-verifies before opening the PR.
+    both for a normal standalone PR off the repo's default base. If
+    --base and --branch are the same non-empty branch, execute treats it
+    as existing-branch mode: the child checks out that branch, commits
+    and pushes to it, and updates the existing PR without creating a new
+    branch or PR. If --base is omitted but the current branch already
+    equals --branch, execute assumes --base is that same branch and uses
+    existing-branch mode. Use apply-review for ordinary review fixes on
+    the current branch; use same-ref execute only when you intentionally
+    need to run a fresh execute task against an already-open PR branch.
+    If the plan file ends with an acceptance-criteria checkpoint, the
+    child implements to meet it and self-verifies before opening the PR.
     AGENTS.md bootstrap: if the repo lacks AGENTS.md / CLAUDE.md at
     the root, execute auto-adds them from the user-editable templates
     at $CEREBRO_HOME/templates/ as a separate first commit before the

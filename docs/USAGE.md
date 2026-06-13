@@ -41,6 +41,10 @@ Describe the change and the repo. The orchestrator:
 3. Waits for your explicit **"go"**.
 4. Executes the plan in a sub-agent: fetches the base branch, creates
    a feature branch, implements, commits, pushes, opens a PR via `gh`.
+   When `execute` is deliberately run with identical `--base` and
+   `--branch` values, it instead updates that existing branch and its
+   existing PR without creating another branch or PR. Omitting `--base`
+   has the same effect when the current branch already equals `--branch`.
 5. Runs codex review against the diff, summarises the findings,
    applies the in-scope important ones, and loops review →
    apply-review until codex is quiet. Re-reviews are incremental: only

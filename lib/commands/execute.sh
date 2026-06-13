@@ -41,6 +41,14 @@ cmd_execute() {
     [[ -r "$plan_path" ]] || die "execute: cannot read plan: $plan_path"
   fi
 
+  if [[ -z "$base_branch" && -n "$new_branch" ]]; then
+    local current_branch
+    current_branch="$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    if [[ "$current_branch" == "$new_branch" ]]; then
+      base_branch="$new_branch"
+    fi
+  fi
+
   local plan_body source_desc
   if [[ -n "$plan_path" ]]; then
     plan_body="$(cat "$plan_path")"
@@ -58,10 +66,24 @@ cmd_execute() {
   # targets (so a suite of plans can stack: plan 1 off main, plan 2 off
   # plan 1's branch, ...); --branch pins the new branch's name so the
   # orchestrator deterministically knows it for the next plan's --base.
+  # If both are the same branch -- either explicitly, or because --base was
+  # omitted while --branch names the current branch -- the user is asking to
+  # continue an existing PR branch, not to create a branch-against-itself PR.
   # When neither is given the child keeps its default behaviour (fetch the
   # repo's base branch, branch from it, open the PR against the default base).
+  local existing_branch_mode=0
+  if [[ -n "$base_branch" && -n "$new_branch" && "$base_branch" == "$new_branch" ]]; then
+    existing_branch_mode=1
+  fi
   local branch_instr=""
-  if [[ -n "$base_branch" || -n "$new_branch" ]]; then
+  if (( existing_branch_mode )); then
+    branch_instr='EXISTING-BRANCH MODE -- this overrides the default fetch/branch/PR creation behaviour:'
+    branch_instr+=$'\n'"  * Fetch '$new_branch' from origin (git fetch origin $new_branch)."
+    branch_instr+=$'\n'"  * Check out the existing branch named EXACTLY '$new_branch' and update it from origin/$new_branch before making changes."
+    branch_instr+=$'\n'"  * Do NOT create a new branch and do NOT invent a different branch name."
+    branch_instr+=$'\n'"  * Commit the work on '$new_branch' and push commits to origin '$new_branch'."
+    branch_instr+=$'\n'"  * Do NOT open a new pull request. Update the existing PR for '$new_branch' by pushing to that branch. If no such PR exists, stop and report that instead of creating one."
+  elif [[ -n "$base_branch" || -n "$new_branch" ]]; then
     branch_instr='STACKED-BRANCH MODE -- this overrides the default fetch/branch/PR-base behaviour:'
     if [[ -n "$base_branch" ]]; then
       branch_instr+=$'\n'"  * Fetch '$base_branch' from origin (git fetch origin $base_branch) and create your new branch from origin/$base_branch -- NOT from origin/main or any other default base."
@@ -116,7 +138,11 @@ cmd_execute() {
 
   local child_prompt
   child_prompt="$(
-    printf 'Execute the following plan in this repository. Fetch the base branch first, branch from the freshly-fetched base, implement, commit, push, and open a PR via gh.\n\n'
+    if (( existing_branch_mode )); then
+      printf "Execute the following plan in this repository. Fetch and check out the existing branch named '%s', implement, commit, and push to that branch so its existing PR updates. Do NOT create a new branch or open a new PR.\n\n" "$new_branch"
+    else
+      printf 'Execute the following plan in this repository. Fetch the base branch first, branch from the freshly-fetched base, implement, commit, push, and open a PR via gh.\n\n'
+    fi
     printf 'Before implementing the plan, ensure the repo has AGENTS.md and CLAUDE.md at the root:\n'
     printf '  * If AGENTS.md is missing, create it from <bootstrap-agents-md> below as a SEPARATE first commit (e.g. "chore: add AGENTS.md") before doing the plan work.\n'
     printf '  * If CLAUDE.md is missing, create it from <bootstrap-claude-md> in the same first commit.\n'

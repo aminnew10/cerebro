@@ -1185,6 +1185,61 @@ EOF
       "$(cat "$EDIR/transcript.jsonl")"; fail=$((fail + 1))
     failures+=("126b completed execute auto-resume")
   fi
+
+  # --- 126c. same --base/--branch means update an existing PR branch, not
+  # invent a new branch to resolve a base/branch conflict. ---
+  PROMPT_STUB_DIR="$WORKDIR/claude-prompt-stub"
+  mkdir -p "$PROMPT_STUB_DIR"
+  cat > "$PROMPT_STUB_DIR/claude" <<'EOF'
+#!/usr/bin/env bash
+cat > "$PROMPT_CAPTURE"
+printf '%s\n' '{"type":"result","subtype":"success","result":"ok"}'
+exit 0
+EOF
+  chmod +x "$PROMPT_STUB_DIR/claude"
+  PROMPT_STUB_PATH="$PROMPT_STUB_DIR:$PATH"
+  PROMPT_CAPTURE="$WORKDIR/existing-branch-prompt.txt"
+  SAME_REF="refactor/apply-strict-real-life-mechanics"
+  env PATH="$PROMPT_STUB_PATH" CEREBRO_SESSION_ID="$ESESS" \
+    PROMPT_CAPTURE="$PROMPT_CAPTURE" \
+    "$CEREBRO_BIN" execute "$REPO" --prompt "tighten mechanics" \
+      --base "$SAME_REF" --branch "$SAME_REF" >/dev/null 2>&1
+  erc=$?
+  eprompt="$(cat "$PROMPT_CAPTURE" 2>/dev/null || true)"
+  if [[ $erc -eq 0 && "$eprompt" == *"EXISTING-BRANCH MODE"* \
+        && "$eprompt" == *"Fetch and check out the existing branch named '$SAME_REF'"* \
+        && "$eprompt" == *"Do NOT create a new branch"* \
+        && "$eprompt" == *"Do NOT open a new pull request"* \
+        && "$eprompt" != *"branch from the freshly-fetched base, implement, commit, push, and open a PR via gh"* ]]; then
+    printf 'PASS  126c same base/branch updates existing branch\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  126c same base/branch prompt wrong [rc=%d prompt=%s]\n' \
+      "$erc" "$eprompt"; fail=$((fail + 1))
+    failures+=("126c same base/branch prompt :: rc=$erc")
+  fi
+
+  # --- 126d. omitted --base also updates the existing branch when the
+  # current checkout already matches --branch. ---
+  git -C "$REPO" checkout -q -B "$SAME_REF"
+  PROMPT_CAPTURE="$WORKDIR/current-branch-prompt.txt"
+  env PATH="$PROMPT_STUB_PATH" CEREBRO_SESSION_ID="$ESESS" \
+    PROMPT_CAPTURE="$PROMPT_CAPTURE" \
+    "$CEREBRO_BIN" execute "$REPO" --prompt "tighten mechanics" \
+      --branch "$SAME_REF" >/dev/null 2>&1
+  crc=$?
+  cprompt="$(cat "$PROMPT_CAPTURE" 2>/dev/null || true)"
+  git -C "$REPO" checkout -q "$BRANCH"
+  if [[ $crc -eq 0 && "$cprompt" == *"EXISTING-BRANCH MODE"* \
+        && "$cprompt" == *"Fetch and check out the existing branch named '$SAME_REF'"* \
+        && "$cprompt" == *"Do NOT create a new branch"* \
+        && "$cprompt" == *"Do NOT open a new pull request"* \
+        && "$cprompt" != *"branch from the freshly-fetched base, implement, commit, push, and open a PR via gh"* ]]; then
+    printf 'PASS  126d current --branch implies existing branch\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  126d current --branch prompt wrong [rc=%d prompt=%s]\n' \
+      "$crc" "$cprompt"; fail=$((fail + 1))
+    failures+=("126d current --branch prompt :: rc=$crc")
+  fi
   # --- 129. stale fallback: a stored id the provider rejects retries fresh
   # (without --resume) and overwrites the store with the new id. ---
   REJECT_STUB_DIR="$WORKDIR/claude-reject-stub"
@@ -1277,6 +1332,8 @@ else
   printf 'SKIP  125b execute resume=none log (claude stub unavailable)\n'
   printf 'SKIP  126  same-branch execute isolation (claude stub unavailable)\n'
   printf 'SKIP  126b completed execute no-auto-resume (claude stub unavailable)\n'
+  printf 'SKIP  126c same base/branch existing-branch prompt (claude stub unavailable)\n'
+  printf 'SKIP  126d current --branch existing-branch prompt (claude stub unavailable)\n'
   printf 'SKIP  129  execute stale fallback (claude stub unavailable)\n'
   printf 'SKIP  130  execute mutating-resume no-rerun (claude stub unavailable)\n'
 fi
