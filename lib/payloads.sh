@@ -29,9 +29,18 @@ cerebro_system_prompt() { cat "$(cerebro_payloads_dir)/system-prompt.md"; }
 # watching and steering live paired children and forbids direct changes.
 cerebro_observe_mode_prompt() { cat "$(cerebro_payloads_dir)/observe-mode.md"; }
 
+# Runtime note shared by read-only `codex exec` children.
+cerebro_codex_readonly_note() {
+  cat "$(cerebro_payloads_dir)/prompts/codex-readonly-note.md"
+}
+
 # The plan-audit prompt fed to the read-only `codex exec` child spawned by
 # `cerebro audit` (the plan / spec / context blocks are appended after it).
-cerebro_audit_prompt() { cat "$(cerebro_payloads_dir)/prompts/audit.md"; }
+cerebro_audit_prompt() {
+  printf '%s\n\n%s\n' \
+    "$(cerebro_codex_readonly_note)" \
+    "$(cat "$(cerebro_payloads_dir)/prompts/audit.md")"
+}
 
 # ----- child agent prompts --------------------------------------------------
 # Each spawned claude child (execute / apply-review / doc-write) runs as a

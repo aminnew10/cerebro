@@ -208,6 +208,10 @@ behalf, by calling them through your Bash tool (which is restricted to
     gate: codex additionally checks the diff against every acceptance
     criterion in that plan and ends the findings file with a single
     line `ACCEPTANCE CRITERIA: MET` or `ACCEPTANCE CRITERIA: NOT MET`.
+    Criteria that require browser/manual/network/CI tools outside the
+    read-only codex child may be labelled `EXTERNAL`; those are not
+    codex failures, and YOU must verify them separately before the
+    checkpoint can pass.
     Pass the plan you just executed so the multi-plan suite workflow
     can decide whether to advance to the next plan. Read the findings
     file (as always) to see the per-criterion verdicts and the bugs.
@@ -1051,13 +1055,15 @@ criteria via codex:
 Because the PR's base is the previous plan's branch, the review's
 default base resolves to that branch, so codex sees only THIS plan's
 diff. READ the findings file. The checkpoint PASSES only when ALL THREE
-hold: the final line says `ACCEPTANCE CRITERIA: MET`; there are no
-in-scope, genuinely-important findings (apply the same scope/importance
-gates as the normal loop); AND you have VERIFIED THE STEP END TO END per
+hold: the final line says `ACCEPTANCE CRITERIA: MET` for the
+code-reviewable criteria; there are no in-scope, genuinely-important
+findings (apply the same scope/importance gates as the normal loop); AND
+you have VERIFIED THE STEP END TO END per
 "# Definition of done: end-to-end verification" -- the app still builds
 and its tests pass, and you have driven the step's user flow against the
 running app with Playwright (or, when that is impossible, the user has
-manually confirmed it). Codex never runs the app, so its MET verdict
+manually confirmed it). Codex never runs the app, and any `EXTERNAL`
+criterion in its output is your responsibility to verify; its MET verdict
 alone is NOT a pass. Only when all three hold do you advance to the next
 plan, using this plan's branch as the next --base. If the e2e check shows
 the step does not actually work, treat it as a failed checkpoint (step 4)

@@ -1309,6 +1309,28 @@ if [[ -x "$CODEX_STUB_DIR/codex" ]]; then
     printf 'FAIL  127b  first review missing --json [argv=%s]\n' "$(cat "$CODEX_ARGV_LOG")"; fail=$((fail + 1))
     failures+=("127b review --json missing")
   fi
+  # --- 127c. review prompt tells codex the read-only child tool limits ---
+  if grep -q "No Playwright/MCP browser tools" "$CODEX_ARGV_LOG" \
+      && grep -q "Do not report a bug or failed criterion solely" "$CODEX_ARGV_LOG"; then
+    printf 'PASS  127c  review prompt includes codex tool limits\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  127c  review prompt missing tool limits [argv=%s]\n' "$(cat "$CODEX_ARGV_LOG")"; fail=$((fail + 1))
+    failures+=("127c review tool limits missing")
+  fi
+
+  # --- 127d. criteria review classifies unavailable browser checks as external ---
+  criteria_plan="$(env CEREBRO_SESSION_ID="$RSESS" \
+    "$CEREBRO_BIN" plan $'## Acceptance criteria (checkpoint)\n- Real Playwright browser check passes' --out criteria-target 2>/dev/null)"
+  : > "$CODEX_ARGV_LOG"
+  env PATH="$CODEX_STUB_PATH" CEREBRO_SESSION_ID="$RSESS" CEREBRO_CODEX_CMD=codex \
+    "$CEREBRO_BIN" review "$REPO" --criteria-file "$criteria_plan" >/dev/null 2>&1
+  if grep -q "use verdict EXTERNAL" "$CODEX_ARGV_LOG" \
+      && grep -q "EXTERNAL criteria do not make the final verdict NOT MET" "$CODEX_ARGV_LOG"; then
+    printf 'PASS  127d  criteria prompt externalizes unavailable browser checks\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  127d  criteria prompt missing external-tool guidance [argv=%s]\n' "$(cat "$CODEX_ARGV_LOG")"; fail=$((fail + 1))
+    failures+=("127d criteria external guidance missing")
+  fi
 
   # --- 128. a second review resumes the stored codex session ---
   : > "$CODEX_ARGV_LOG"
@@ -1337,10 +1359,11 @@ if [[ -x "$CODEX_STUB_DIR/codex" ]]; then
   audit_id="$(jq -r '.[] | select(.provider=="codex" and .role=="audit") | .id' "$RDIR/child-sessions.json" 2>/dev/null)"
   if [[ "$audit_out" == "$RDIR/audits/audit-target-audit.md" && -s "$audit_out" \
         && "$audit_argv" == *"--sandbox read-only"* \
+        && "$audit_argv" == *"No Playwright/MCP browser tools"* \
         && "$audit_argv" == *"touch lib/thing.sh"* \
         && "$audit_argv" == *"key paths: lib/"* \
         && "$audit_id" == "$CX_TID" ]]; then
-    printf 'PASS  128c  audit runs codex read-only with plan+context, records thread\n'; pass=$((pass + 1))
+    printf 'PASS  128c  audit runs codex read-only with limits, plan+context, records thread\n'; pass=$((pass + 1))
   else
     printf 'FAIL  128c  audit codex run wrong [out=%s id=%s]\n' "$audit_out" "$audit_id"; fail=$((fail + 1))
     failures+=("128c audit codex :: out=$audit_out id=$audit_id")
@@ -1359,6 +1382,8 @@ if [[ -x "$CODEX_STUB_DIR/codex" ]]; then
 else
   printf 'SKIP  127  review codex-session capture (codex stub unavailable)\n'
   printf 'SKIP  127b review codex --json (codex stub unavailable)\n'
+  printf 'SKIP  127c review codex tool limits (codex stub unavailable)\n'
+  printf 'SKIP  127d review external criteria guidance (codex stub unavailable)\n'
   printf 'SKIP  128  review codex-session resume (codex stub unavailable)\n'
   printf 'SKIP  128b review codex resume argv (codex stub unavailable)\n'
   printf 'SKIP  128c audit codex run (codex stub unavailable)\n'
