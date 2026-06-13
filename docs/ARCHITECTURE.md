@@ -219,13 +219,13 @@ pausing a first-class protocol:
   `result` event text) and surfaces it under a
   `----- <role> child closing message -----` banner
   (`surface_child_reply()`).
-* `cerebro answer <repo> "<answer>" --role <role>` is the explicit
+* `cerebro answer <child-session-id> "<answer>"` is the explicit
   bridge back into that child. It resolves the stored child record inside
-  the current cerebro session and resumes the **same provider
-  conversation** (`claude --resume <id>`) with the answer as the next
-  turn, re-passing the identical role system prompt so the child's
-  constraints stay intact. The child continues from where it paused; no
-  work is redone.
+  the current cerebro session, recovers the role/repo metadata from that
+  record, and resumes the **same provider conversation**
+  (`claude --resume <id>`) with the answer as the next turn, re-passing
+  the identical role system prompt so the child's constraints stay
+  intact. The child continues from where it paused; no work is redone.
 
 The orchestrator's policy (system prompt) layers on top: answer from
 the spec/plan/recall when the record settles it, relay to the user only

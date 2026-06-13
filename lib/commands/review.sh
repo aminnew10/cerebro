@@ -442,10 +442,11 @@ cmd_apply_review() {
     die "apply-review: child claude failed (rc=$rc); see $child_log"
   fi
   child_store_done "$ckey"
+  local child_id; child_id="$(cat "$id_capture" 2>/dev/null || true)"
   rm -f "$id_capture"
   log_event "apply_review_finished" "$child_log"
   pair_report "$pair" "$child_log"
-  surface_child_reply "$msg_capture" apply-review
+  surface_child_reply "$msg_capture" apply-review "$child_id"
   rm -f "$msg_capture"
   echo "$child_log"
 }

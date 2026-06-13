@@ -134,8 +134,10 @@ a fresh provider conversation even if it runs on the same repo and branch.
 A child that hits a genuine blocker doesn't guess and doesn't die: it
 **pauses with a question** as its closing message. The orchestrator
 answers from the spec or past sessions when the record settles it, and
-only relays to you when the decision is genuinely yours; the answer
-resumes the same child exactly where it stopped.
+only relays to you when the decision is genuinely yours. The closing
+message prints the child session id, and
+`cerebro answer <child-session-id> "<answer>"` resumes that same child
+exactly where it stopped.
 
 ## Teach it your preferences
 

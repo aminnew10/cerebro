@@ -155,8 +155,9 @@ Notes:
     doc-write) runs non-interactively and cannot ask questions mid-run.
     When it hits a genuine blocker it ends with its question as its final
     message; the orchestrator answers it (from the spec/recall, or by
-    asking you) and resumes the SAME child session with the answer via
-    `cerebro answer`, so the child continues where it paused.
+    asking you) and resumes the SAME child session with
+    `cerebro answer <child-session-id> "<answer>"`, so the child
+    continues where it paused.
   * Pair programming. Ask the orchestrator to "pair" (or watch / steer)
     an execute, apply-review, or doc-write child and it adds
     `--pair`: the child runs with claude's stream-json input so you can
@@ -265,10 +266,15 @@ child_log_path() {
 # decide whether the child finished or is waiting on an answer (see the
 # "child stops to ask a question" rule in its system prompt).
 #   $1 = file holding the child's final result text   $2 = role label
+#   $3 = optional child provider session id for `cerebro answer`
 surface_child_reply() {
-  local f="$1" role="$2"
+  local f="$1" role="$2" child_id="${3:-}"
   [[ -s "$f" ]] || return 0
   printf -- '----- %s child closing message (read it: a question here means the child PAUSED for an answer) -----\n' "$role"
+  if [[ -n "$child_id" ]]; then
+    printf 'child session: %s\n' "$child_id"
+    printf 'answer with: cerebro answer %s "<answer>"\n\n' "$child_id"
+  fi
   cat "$f"
   printf -- '\n----- end %s child closing message -----\n' "$role"
 }

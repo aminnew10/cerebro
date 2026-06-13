@@ -64,9 +64,9 @@ pair_begin() {
   PAIR_FIFO="${child_log%.jsonl}.steer.fifo"
   PAIR_IDLE="${CEREBRO_PAIR_IDLE:-60}"
   PAIR_PGID="${child_log%.jsonl}.pgid"
-  PAIR_STALL="${CEREBRO_PAIR_STALL:-90}"
+  PAIR_STALL="${CEREBRO_PAIR_STALL:-180}"
   # Keep the busy threshold below the common external 8-minute stale reset.
-  PAIR_STALL_BUSY="${CEREBRO_PAIR_STALL_BUSY:-420}"
+  PAIR_STALL_BUSY="${CEREBRO_PAIR_STALL_BUSY:-450}"
   PAIR_LAUNCH=(python3 "$CEREBRO_LIB_DIR/python/exec_setsid.py" "$PAIR_PGID")
   : > "$PAIR_STEER"
   rm -f "$PAIR_FIFO" "$PAIR_PGID"

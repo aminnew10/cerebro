@@ -54,22 +54,23 @@ child_session_get() {
   child_store get "$1"
 }
 
-# child_session_fresh <key> -- succeed when <key> has a stored entry whose
-# updated_at is within CEREBRO_CHILD_SESSION_TTL seconds (default 24h). A
-# missing/unparseable timestamp or an over-TTL entry is treated as stale.
-child_session_fresh() {
-  local f; f="$(child_sessions_file)"
-  [[ -f "$f" ]] || return 1
-  child_store fresh "$1" "${CEREBRO_CHILD_SESSION_TTL:-86400}"
-}
-
-# child_session_running_fresh <key> -- like child_session_fresh, but only for
-# entries still marked running. Normal child launches use this so completed
-# children are never automatically reused by the next sub-agent.
+# child_session_running_fresh <key> -- succeed when <key> is still marked
+# running and updated_at is within CEREBRO_CHILD_SESSION_TTL seconds. Normal
+# child launches use this so completed children are never automatically reused
+# by the next sub-agent.
 child_session_running_fresh() {
   local f; f="$(child_sessions_file)"
   [[ -f "$f" ]] || return 1
   child_store running-fresh "$1" "${CEREBRO_CHILD_SESSION_TTL:-86400}"
+}
+
+# child_session_find_id <provider-id> -- emit TSV rows
+# (key, id, provider, role, repo, branch, status, updated_at, log) for fresh
+# entries in this parent session with that provider conversation id.
+child_session_find_id() {
+  local f; f="$(child_sessions_file)"
+  [[ -f "$f" ]] || return 0
+  child_store find-id "${CEREBRO_CHILD_SESSION_TTL:-86400}" "$1"
 }
 
 # child_store_begin <key> <provider> <role> <repo> <branch> <log> -- mark a
@@ -108,16 +109,6 @@ execute_child_disc() {
 child_store_done() {
   [[ -n "${1:-}" ]] || return 0
   child_store done "$1" "$(ts_iso)"
-}
-
-# child_session_match <role> <repo> -- emit a TSV row (key, id, branch, status,
-# updated_at) for every still-fresh stored child of <role> in <repo> that has a
-# resumable id. `cerebro answer` uses this to find the session to resume when no
-# explicit discriminator is passed (and to detect the ambiguous many-match case).
-child_session_match() {
-  local f; f="$(child_sessions_file)"
-  [[ -f "$f" ]] || return 0
-  child_store match "${CEREBRO_CHILD_SESSION_TTL:-86400}" "$1" "$2"
 }
 
 # child_store_list_running -- emit a TSV row

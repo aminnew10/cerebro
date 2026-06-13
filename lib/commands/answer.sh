@@ -2,98 +2,42 @@
 # subcommand: answer (resume a paused child with an answer to its question)
 # Sourced by bin/cerebro; not meant to be executed directly.
 
-# ----- subcommand: cerebro answer <repo> "<answer>" [--role ...] -----------
+# ----- subcommand: cerebro answer <child-session-id> "<answer>" -------------
 # A child (execute / apply-review / doc-write) runs non-interactively, so
 # when it hits a genuine blocker it ends with its QUESTION as its closing
 # message instead of finishing the work. `cerebro answer` resumes that exact
 # child session and delivers the orchestrator's answer as the child's next
 # turn, so it continues where it paused instead of redoing work.
-#
-# The target child is identified by role+repo. When several children of the
-# same role are stored in one repo, pass the discriminator the launch used:
-# --branch for apply-review/doc-write, or --plan / --for-prompt for execute
-# (plus --branch when the execute launch used one). Branch-only execute
-# selection is accepted only when it matches exactly one stored child.
 cmd_answer() {
   require_session
   build_timeout_cmd
 
-  local repo="${1:-}"; shift || true
-  local answer="" role="execute"
-  local branch="" plan_path="" for_prompt=""
+  local child_id="${1:-}"; shift || true
+  local answer=""
   # Second positional, if present and not a flag, is the answer text.
-  if [[ $# -gt 0 && "${1:-}" != --* ]]; then
+  if [[ $# -gt 0 ]]; then
     answer="$1"; shift
   fi
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --role)       shift; role="${1:-}";       shift || true ;;
-      --message)    shift; answer="${1:-}";     shift || true ;;
-      --branch)     shift; branch="${1:-}";     shift || true ;;
-      --plan)       shift; plan_path="${1:-}";  shift || true ;;
-      --for-prompt) shift; for_prompt="${1:-}"; shift || true ;;
-      *) die "answer: unknown arg: $1" ;;
-    esac
-  done
+  [[ $# -eq 0 ]] || die "answer: unknown arg: $1"
 
-  [[ -n "$repo" ]] \
-    || die "usage: cerebro answer <repo-abs-path> \"<answer>\" [--role execute|apply-review|doc-write] [--branch <name>] [--plan <path> | --for-prompt <text>]"
-  [[ "$repo" = /* ]] || die "answer: repo path must be absolute: $repo"
-  [[ -d "$repo" ]] || die "answer: repo not a directory: $repo"
-  [[ -n "$answer" ]] || die "answer: empty answer (pass the answer text as the second argument or via --message)"
-  case "$role" in
-    execute|apply-review|doc-write) ;;
-    *) die "answer: unknown role: $role (expected execute|apply-review|doc-write)" ;;
-  esac
+  [[ -n "$child_id" ]] || die "usage: cerebro answer <child-session-id> \"<answer>\""
+  [[ -n "$answer" ]] || die "answer: empty answer (pass the answer text as the second argument)"
 
-  if [[ -n "$plan_path" && -n "$for_prompt" ]]; then
-    die "answer: pass either --plan or --for-prompt, not both"
+  local rows n
+  rows="$(child_session_find_id "$child_id")"
+  n="$(printf '%s' "$rows" | grep -c .)"
+  if (( n == 0 )); then
+    die "answer: no fresh child session $child_id in this cerebro session"
+  elif (( n > 1 )); then
+    die "answer: child session $child_id matches several child records in this cerebro session; cannot resume safely"
   fi
-
-  # Build the launch discriminator the original command keyed on, when it is
-  # exact. Left empty -> match by role+repo, optionally filtered by branch.
-  local disc="" branch_filter=""
-  case "$role" in
-    execute)
-      if [[ -n "$plan_path" || -n "$for_prompt" ]]; then
-        disc="$(execute_child_disc "$branch" "$plan_path" "$for_prompt")"
-      elif [[ -n "$branch" ]]; then
-        branch_filter="$branch"
-      fi
-      ;;
-    apply-review|doc-write) [[ -n "$branch" ]] && disc="$branch" ;;
+  local ckey prior provider role repo label status updated log
+  IFS=$'\t' read -r ckey prior provider role repo label status updated log <<<"$rows"
+  case "$provider:$role" in
+    claude:execute|claude:apply-review|claude:doc-write) ;;
+    *) die "answer: child session $child_id is not an answerable claude child (provider=$provider role=$role)" ;;
   esac
-
-  # Resolve the kept session: exact discriminator -> exact key; otherwise
-  # auto-match the single resumable session of this role in the repo.
-  local ckey="" prior="" label=""
-  if [[ -n "$disc" ]]; then
-    ckey="$(child_key "$repo" "$role" "$disc")"
-    prior="$(child_session_get "$ckey")"
-    if [[ -z "$prior" ]] || ! child_session_fresh "$ckey"; then
-      die "answer: no fresh $role session for that target in $repo. Run 'cerebro status', or omit the discriminator to auto-match."
-    fi
-    label="$disc"
-  else
-    local rows n
-    rows="$(child_session_match "$role" "$repo")"
-    if [[ -n "$branch_filter" ]]; then
-      rows="$(printf '%s\n' "$rows" | awk -F '\t' -v b="$branch_filter" '$3 == b')"
-    fi
-    n="$(printf '%s' "$rows" | grep -c .)"
-    if (( n == 0 )); then
-      die "answer: no resumable $role session found in $repo (the child may never have run, or its session expired)."
-    elif (( n > 1 )); then
-      { printf 'cerebro: answer: several %s sessions in %s -- pass a more specific discriminator:\n' "$role" "$repo"
-        while IFS=$'\t' read -r _k _id _br _st _up; do
-          [[ -z "$_k" ]] && continue
-          printf '  %s (status=%s, updated=%s)\n' "$_br" "$_st" "$_up"
-        done <<<"$rows"
-      } >&2
-      exit 1
-    fi
-    IFS=$'\t' read -r ckey prior label _ _ <<<"$rows"
-  fi
+  [[ -d "$repo" ]] || die "answer: stored child repo is missing: $repo"
 
   local sys_prompt; sys_prompt="$(child_sys_prompt "$role")"
   local child_log; child_log="$(child_log_path "answer-$role")"
@@ -109,8 +53,8 @@ cmd_answer() {
   local child_prompt
   child_prompt="$(printf 'The cerebro orchestrator is answering the question you raised when you paused. Use this answer and CONTINUE the task from where you stopped -- do not restart work you have already completed. If you hit another genuine blocker, pause again the same way (end with a single clear question).\n\n<answer>\n%s\n</answer>\n' "$answer")"
 
-  say "cerebro: answering $role child in $repo${label:+ ($label)}"
-  log_event "answer_started" "role=$role repo=$repo target=${label:-auto} resume=$prior"
+  say "cerebro: answering $role child session $prior in $repo"
+  log_event "answer_started" "role=$role repo=$repo child=$ckey resume=$prior"
 
   # The roles push commits rather than producing a file, so we capture only
   # the child's closing message to surface (it may complete, or pause again
@@ -134,7 +78,7 @@ cmd_answer() {
 
   child_store_done "$ckey"
   log_event "answer_finished" "role=$role log=$child_log"
-  surface_child_reply "$msg_capture" "$role"
+  surface_child_reply "$msg_capture" "$role" "$prior"
   rm -f "$msg_capture"
   echo "$child_log"
 }

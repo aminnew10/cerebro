@@ -202,10 +202,11 @@ cmd_execute() {
   # parse_stream.py); just mark this line of work cleanly finished so it no
   # longer shows up as interrupted in `cerebro status`.
   child_store_done "$ckey"
+  local child_id; child_id="$(cat "$id_capture" 2>/dev/null || true)"
   rm -f "$id_capture"
   log_event "execute_finished" "$child_log"
   pair_report "$pair" "$child_log"
-  surface_child_reply "$msg_capture" execute
+  surface_child_reply "$msg_capture" execute "$child_id"
   rm -f "$msg_capture"
   echo "$child_log"
 }

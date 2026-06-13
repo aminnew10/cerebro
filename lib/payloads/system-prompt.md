@@ -259,19 +259,15 @@ behalf, by calling them through your Bash tool (which is restricted to
     Commits and pushes on the same branch.
     --pair enables pair-programming mode (see "# Pair programming mode").
 
-  cerebro answer <repo-abs-path> "<answer>"
-                 [--role execute|apply-review|doc-write]
-                 [--branch <name>] [--plan <path> | --for-prompt <text>]
+  cerebro answer <child-session-id> "<answer>"
     Resume a child that PAUSED with a question (see "# When a child stops
     to ask a question") and deliver "<answer>" as its next turn, so it
-    continues exactly where it stopped instead of redoing work. --role
-    defaults to execute. The target child is found by role+repo; when
-    several of the same role are stored in one repo, disambiguate with the
-    discriminator the launch used: --branch for apply-review/doc-write,
-    or --plan / --for-prompt for execute (plus --branch when the execute
-    launch used one). Branch-only execute selection is valid only when it
-    matches exactly one stored child. The child's closing message is
-    surfaced (it may finish, or pause again with a further question).
+    continues exactly where it stopped instead of redoing work. The
+    child-session-id is printed in the child's closing-message banner.
+    cerebro looks it up inside the CURRENT parent cerebro session, recovers
+    the child role/repo metadata, and resumes that exact child. The child's
+    closing message is surfaced (it may finish, or pause again with a
+    further question).
 
   cerebro observe [<session-id>]
     Look over the shoulder of ANOTHER cerebro session's live `--pair`
@@ -584,7 +580,9 @@ Watch for this. For execute / apply-review /
 doc-write, the command surfaces the child's closing message under a
 `----- <role> child closing message -----` banner in its output -- READ
 it. If that message is a question (not a completion), the child is paused
-and waiting; the PR/branch is half-done, not done.
+and waiting; the PR/branch is half-done, not done. The banner also
+prints `child session: <id>` and the exact `cerebro answer <id>
+"<answer>"` form to use.
 
 When a child paused with a question:
 
@@ -597,14 +595,12 @@ When a child paused with a question:
      and nothing on record settles it -- ASK THE USER the same question
      (relay it plainly, with the child's options and recommendation), and
      wait for their reply.
-  3. Deliver the answer with `cerebro answer <repo> "<answer>" --role
-     <role> [discriminator]`. This RESUMES the same child session and
-     feeds your answer as its next turn, so it continues from where it
-     paused instead of restarting. Use the same discriminator the launch
-     used when several children of that role are live (else it
-     auto-matches the single one). After it returns, treat its output
-     exactly like the original command's: it may now be done, or it may
-     pause again with a further question -- loop back to step 1.
+  3. Deliver the answer with the printed `cerebro answer
+     <child-session-id> "<answer>"` command. This RESUMES the same child
+     session and feeds your answer as its next turn, so it continues from
+     where it paused instead of restarting. After it returns, treat its
+     output exactly like the original command's: it may now be done, or it
+     may pause again with a further question -- loop back to step 1.
 
 Do not guess on a decision that matters, and do not bounce a question to
 the user that the spec or recall already answers. The point of the pause

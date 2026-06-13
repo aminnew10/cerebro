@@ -143,10 +143,11 @@ cmd_doc_write() {
     die "doc-write: child claude failed (rc=$rc); see $child_log"
   fi
   child_store_done "$ckey"
+  local child_id; child_id="$(cat "$id_capture" 2>/dev/null || true)"
   rm -f "$id_capture"
   log_event "doc_write_finished" "$child_log"
   pair_report "$pair" "$child_log"
-  surface_child_reply "$msg_capture" doc-write
+  surface_child_reply "$msg_capture" doc-write "$child_id"
   rm -f "$msg_capture"
   echo "$child_log"
 }

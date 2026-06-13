@@ -1894,29 +1894,29 @@ fi
 
 # --- 150. validation: empty answer ---
 STDERR_CONTAINS="empty answer" \
-run_case 150 "answer empty-answer rejected" 1 -- "$CEREBRO_BIN" answer "$REPO"
+run_case 150 "answer empty-answer rejected" 1 -- "$CEREBRO_BIN" answer CHILD-123
 
-# --- 151. validation: unknown role ---
-STDERR_CONTAINS="unknown role" \
-run_case 151 "answer unknown-role rejected" 1 -- "$CEREBRO_BIN" answer "$REPO" "go" --role bogus
+# --- 151. validation: old selector flags are no longer accepted ---
+STDERR_CONTAINS="unknown arg" \
+run_case 151 "answer selector flags rejected" 1 -- "$CEREBRO_BIN" answer CHILD-123 "go" --role bogus
 
-# --- 152. validation: relative repo path ---
-STDERR_CONTAINS="must be absolute" \
-run_case 152 "answer relative-repo rejected" 1 -- "$CEREBRO_BIN" answer relative "go"
+# --- 152. validation: missing child id ---
+STDERR_CONTAINS="usage" \
+run_case 152 "answer missing child id rejected" 1 -- "$CEREBRO_BIN" answer
 
-# --- 153. no resumable session to answer (auto-match finds nothing) ---
-STDERR_CONTAINS="no resumable execute session" \
-run_case 153 "answer with no stored session" 1 -- "$CEREBRO_BIN" answer "$REPO" "go"
+# --- 153. no stored child session with that id in the current parent session ---
+STDERR_CONTAINS="no fresh child session" \
+run_case 153 "answer unknown child session" 1 -- "$CEREBRO_BIN" answer NO-SUCH-CHILD "go"
 
 if (( STUB_OK )); then
-  # --- 154. answer auto-matches the single execute session and resumes it ---
+  # --- 154. answer resolves the child session id and resumes it ---
   ANSESS="answer-session"; ANDIR="$CEREBRO_HOME/sessions/$ANSESS"
   mkdir -p "$ANDIR/children" "$ANDIR/plans"; : > "$ANDIR/transcript.jsonl"
   # Seed a stored execute session for this repo.
   env PATH="$ID_STUB_PATH" CEREBRO_SESSION_ID="$ANSESS" \
     "$CEREBRO_BIN" execute "$REPO" --prompt "do the thing" --branch feat/ans >/dev/null 2>&1
   ans_out="$(env PATH="$ID_STUB_PATH" CEREBRO_SESSION_ID="$ANSESS" \
-    "$CEREBRO_BIN" answer "$REPO" "use option B" --role execute 2>/dev/null)"
+    "$CEREBRO_BIN" answer STUBSESSION-1111 "use option B" 2>/dev/null)"
   if grep -q '"what":"answer_started"' "$ANDIR/transcript.jsonl" \
      && grep -q 'resume=STUBSESSION-1111' "$ANDIR/transcript.jsonl"; then
     printf 'PASS  154  answer resumes the stored execute session\n'; pass=$((pass + 1))
@@ -1925,17 +1925,17 @@ if (( STUB_OK )); then
     failures+=("154 answer resume")
   fi
 
-  # --- 155. answer surfaces the child's closing message on stdout ---
-  if [[ "$ans_out" == *"child closing message"* && "$ans_out" == *"ok"* ]]; then
+  # --- 155. answer surfaces the child's closing message and child id on stdout ---
+  if [[ "$ans_out" == *"child closing message"* && "$ans_out" == *"child session: STUBSESSION-1111"* \
+        && "$ans_out" == *"ok"* ]]; then
     printf 'PASS  155  answer surfaces the child closing message\n'; pass=$((pass + 1))
   else
     printf 'FAIL  155  answer did not surface closing message [out=%s]\n' "$ans_out"; fail=$((fail + 1))
     failures+=("155 answer surface :: out=$ans_out")
   fi
 
-  # --- 155b. answer can target the exact execute child when several plans
-  # share one branch. This preserves the pause/answer workflow after execute
-  # keys include branch+plan for same-branch plan isolation. ---
+  # --- 155b. answer targets the exact child session id when several plans
+  # share one branch. ---
   AXSESS="answer-exact-session"; AXDIR="$CEREBRO_HOME/sessions/$AXSESS"
   mkdir -p "$AXDIR/children" "$AXDIR/plans"; : > "$AXDIR/transcript.jsonl"
   AXP1="$AXDIR/plans/one.md"; AXP2="$AXDIR/plans/two.md"
@@ -1950,8 +1950,7 @@ if (( STUB_OK )); then
                   branch:"feat/ans", status:"done", updated_at:$ts}}' \
         > "$AXDIR/child-sessions.json"
   env PATH="$ID_STUB_PATH" CEREBRO_SESSION_ID="$AXSESS" \
-    "$CEREBRO_BIN" answer "$REPO" "use option B" --role execute \
-      --branch feat/ans --plan "$AXP2" >/dev/null 2>&1
+    "$CEREBRO_BIN" answer CHILD-TWO "use option B" >/dev/null 2>&1
   if grep -q 'resume=CHILD-TWO' "$AXDIR/transcript.jsonl" \
      && ! grep -q 'resume=CHILD-ONE' "$AXDIR/transcript.jsonl"; then
     printf 'PASS  155b answer targets exact same-branch plan child\n'; pass=$((pass + 1))
@@ -1961,13 +1960,18 @@ if (( STUB_OK )); then
     failures+=("155b answer exact child")
   fi
 
-  # --- 156. answer --role audit rejected (audit children are codex,
-  # which `cerebro answer` cannot resume) ---
-  STDERR_CONTAINS="unknown role" \
-  run_case 156 "answer --role audit rejected" 1 -- \
-    "$CEREBRO_BIN" answer "$REPO" "go" --role audit
+  # --- 156. answer rejects non-claude child sessions such as codex audit. ---
+  CSESS="answer-codex-session"; CSDIR="$CEREBRO_HOME/sessions/$CSESS"
+  mkdir -p "$CSDIR/children"; : > "$CSDIR/transcript.jsonl"
+  jq -n --arg repo "$REPO" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{auditkey: {id:"CODEX-CHILD", provider:"codex", role:"audit", repo:$repo,
+                    branch:"audit", status:"done", updated_at:$ts}}' \
+        > "$CSDIR/child-sessions.json"
+  STDERR_CONTAINS="not an answerable claude child" \
+  run_case 156 "answer codex child rejected" 1 -- \
+    env CEREBRO_SESSION_ID="$CSESS" "$CEREBRO_BIN" answer CODEX-CHILD "go"
 else
-  for t in 154 155 156; do
+  for t in 154 155 155b 156; do
     printf 'SKIP  %s  answer resume (claude stub unavailable)\n' "$t"
   done
 fi

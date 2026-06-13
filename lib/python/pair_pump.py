@@ -20,8 +20,8 @@ import base64, glob, json, os, select, signal, sys, time
 fifo, steer_path, child_log = sys.argv[1], sys.argv[2], sys.argv[3]
 idle_grace = float(sys.argv[4])
 pgid_file = sys.argv[5] if len(sys.argv) > 5 else ""
-stall_secs = float(sys.argv[6]) if len(sys.argv) > 6 and sys.argv[6] else 90.0
-stall_busy_secs = float(sys.argv[7]) if len(sys.argv) > 7 and sys.argv[7] else 420.0
+stall_secs = float(sys.argv[6]) if len(sys.argv) > 6 and sys.argv[6] else 180.0
+stall_busy_secs = float(sys.argv[7]) if len(sys.argv) > 7 and sys.argv[7] else 450.0
 
 def emit(text):
     try:
