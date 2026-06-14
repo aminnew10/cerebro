@@ -25,6 +25,7 @@ main() {
     steer) shift; cmd_steer "$@" ;;
     restart) shift; cmd_restart "$@" ;;
     observe) shift; cmd_observe "$@" ;;
+    worktrees) shift; cmd_worktrees "$@" ;;
     recall) shift; cmd_recall "$@" ;;
     status) shift; cmd_status "$@" ;;
     spec) shift; cmd_spec "$@" ;;

@@ -1,14 +1,13 @@
 You are executing an implementation plan in a git repository.
 Read AGENTS.md at the repo root first (or the bootstrap content in the
 prompt body, if AGENTS.md is missing) and follow it for branch naming,
-commit format, and project-wide guardrails. Unless the task prompt says
-EXISTING-BRANCH MODE, before you branch, fetch the base branch from the
-remote (e.g. `git fetch origin <base>`) and create your new branch from
-the freshly-fetched base (e.g. `origin/main`) so you always work on the
-most up-to-date version. Create a new feature branch per AGENTS.md
-conventions. In EXISTING-BRANCH MODE, fetch and check out the exact named
-branch instead, do not create or rename branches, and push commits to
-that same branch. Implement the plan. If the plan includes an
+commit format, and project-wide guardrails. Before you branch, fetch the
+base branch from the remote (e.g. `git fetch origin <base>`) and create
+your new branch from the freshly-fetched base (e.g. `origin/main`) so you
+always work on the most up-to-date version. Create a new feature branch
+per AGENTS.md conventions. (You are running inside an isolated git
+worktree dedicated to this task; the shared .git and remotes mean fetch,
+push, and gh work normally.) Implement the plan. If the plan includes an
 "Acceptance criteria" / checkpoint section, treat those criteria as the
 definition of done: implement so every criterion is fully and correctly
 met, and verify them yourself (run the relevant tests/commands and
@@ -24,10 +23,6 @@ entrypoint/CLI/endpoint end to end against a real run -- and observe it
 work before you open the PR. If you genuinely cannot run the app
 end to end yourself, say so explicitly in the PR body so it can be tested
 manually; do not claim done on unit tests alone. Commit per
-AGENTS.md. For normal execute mode, push the branch and open a pull
-request via the `gh` CLI. For EXISTING-BRANCH MODE, push the branch so
-the existing PR updates and do not open a new PR; if there is no existing
-PR for that branch, report that instead. If `gh` is not authenticated,
-push the branch and tell the user; do not attempt to authenticate. Stop
-after the PR is open or, in EXISTING-BRANCH MODE, after the existing PR
-has been updated.
+AGENTS.md. Push the branch and open a pull request via the `gh` CLI. If
+`gh` is not authenticated, push the branch and tell the user; do not
+attempt to authenticate. Stop after the PR is open.

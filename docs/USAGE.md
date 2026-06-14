@@ -39,12 +39,14 @@ Describe the change and the repo. The orchestrator:
    against the actual code — phantom targets, missed call sites, scope
    creep, over-engineering — and revises it before proposing it.
 3. Waits for your explicit **"go"**.
-4. Executes the plan in a sub-agent: fetches the base branch, creates
-   a feature branch, implements, commits, pushes, opens a PR via `gh`.
-   When `execute` is deliberately run with identical `--base` and
-   `--branch` values, it instead updates that existing branch and its
-   existing PR without creating another branch or PR. Omitting `--base`
-   has the same effect when the current branch already equals `--branch`.
+4. Executes the plan in a sub-agent running in an **isolated git
+   worktree** of the repo (under `$CEREBRO_HOME/worktrees/`), never your
+   live checkout: it fetches the base branch, creates a feature branch,
+   implements, commits, pushes, and opens a PR via `gh` — all inside the
+   worktree. On success it announces the worktree path, which the
+   orchestrator then uses as the repo argument for that task's review /
+   apply-review / doc-write. Worktrees persist between runs; stale ones
+   are reclaimed with `cerebro worktrees cleanup`.
 5. Runs codex review against the diff, summarises the findings,
    applies the in-scope important ones, and loops review →
    apply-review until codex is quiet. Re-reviews are incremental: only
@@ -117,11 +119,12 @@ review has no live-steer):
 * **Restart** — `cerebro restart "<diagnosis>"` is for when a paired
   execute child has gone fundamentally off (wrong assumptions, drifted
   from the spec) and steering its poisoned context is futile. It
-  abandons the child, reverts the strayed work to a clean slate (drops
-  the working tree, tears down the strayed branch and its PR — never the
-  base branch), and hands the orchestrator the diagnosis so it can
-  relaunch a fresh execute with a corrected prompt. Same arg shape as
-  steer (pass the pipe path first when several run at once).
+  abandons the child and unconditionally tears down everything the run
+  produced — the fresh branch, its PR, and the task's worktree are all
+  deleted (your main checkout was never touched) — then hands the
+  orchestrator the diagnosis so it can relaunch a fresh execute with a
+  corrected prompt. Same arg shape as steer (pass the pipe path first
+  when several run at once).
 
 When the child finishes, your steering is reported back and the
 orchestrator folds it in automatically — updating the session spec and
@@ -248,6 +251,8 @@ open in your editor:
 ~/.cerebro/
   learnings.md                       # confirmed preferences (injected into the prompt)
   templates/AGENTS.md, CLAUDE.md     # defaults dropped into new repos (edit freely)
+  worktrees/<ckey>/                  # isolated per-task execute worktrees
+                                     #   (GC stale ones with `cerebro worktrees cleanup`)
   sessions/<id>/
     spec.md                          # current session spec (requirements of record)
     spec-history.jsonl               # every prior spec version

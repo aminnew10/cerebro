@@ -1186,8 +1186,8 @@ EOF
     failures+=("126b completed execute auto-resume")
   fi
 
-  # --- 126c. same --base/--branch means update an existing PR branch, not
-  # invent a new branch to resolve a base/branch conflict. ---
+  # --- 126c. distinct --base/--branch drives STACKED-BRANCH MODE; the deleted
+  # existing-branch mode wording never appears (even when base == branch). ---
   PROMPT_STUB_DIR="$WORKDIR/claude-prompt-stub"
   mkdir -p "$PROMPT_STUB_DIR"
   cat > "$PROMPT_STUB_DIR/claude" <<'EOF'
@@ -1198,48 +1198,24 @@ exit 0
 EOF
   chmod +x "$PROMPT_STUB_DIR/claude"
   PROMPT_STUB_PATH="$PROMPT_STUB_DIR:$PATH"
-  PROMPT_CAPTURE="$WORKDIR/existing-branch-prompt.txt"
-  SAME_REF="refactor/apply-strict-real-life-mechanics"
+  PROMPT_CAPTURE="$WORKDIR/stacked-prompt.txt"
   env PATH="$PROMPT_STUB_PATH" CEREBRO_SESSION_ID="$ESESS" \
     PROMPT_CAPTURE="$PROMPT_CAPTURE" \
-    "$CEREBRO_BIN" execute "$REPO" --prompt "tighten mechanics" \
-      --base "$SAME_REF" --branch "$SAME_REF" >/dev/null 2>&1
+    "$CEREBRO_BIN" execute "$REPO" --prompt "stack on plan one" \
+      --base feat/slug-01 --branch feat/slug-02 >/dev/null 2>&1
   erc=$?
   eprompt="$(cat "$PROMPT_CAPTURE" 2>/dev/null || true)"
-  if [[ $erc -eq 0 && "$eprompt" == *"EXISTING-BRANCH MODE"* \
-        && "$eprompt" == *"Fetch and check out the existing branch named '$SAME_REF'"* \
-        && "$eprompt" == *"Do NOT create a new branch"* \
-        && "$eprompt" == *"Do NOT open a new pull request"* \
-        && "$eprompt" != *"branch from the freshly-fetched base, implement, commit, push, and open a PR via gh"* ]]; then
-    printf 'PASS  126c same base/branch updates existing branch\n'; pass=$((pass + 1))
+  if [[ $erc -eq 0 && "$eprompt" == *"STACKED-BRANCH MODE"* \
+        && "$eprompt" == *"create your new branch from origin/feat/slug-01"* \
+        && "$eprompt" == *"Name the new branch EXACTLY 'feat/slug-02'"* \
+        && "$eprompt" != *"EXISTING-BRANCH MODE"* ]]; then
+    printf 'PASS  126c distinct base/branch drives stacked mode (no existing-branch mode)\n'; pass=$((pass + 1))
   else
-    printf 'FAIL  126c same base/branch prompt wrong [rc=%d prompt=%s]\n' \
+    printf 'FAIL  126c stacked-mode prompt wrong [rc=%d prompt=%s]\n' \
       "$erc" "$eprompt"; fail=$((fail + 1))
-    failures+=("126c same base/branch prompt :: rc=$erc")
+    failures+=("126c stacked-mode prompt :: rc=$erc")
   fi
 
-  # --- 126d. omitted --base also updates the existing branch when the
-  # current checkout already matches --branch. ---
-  git -C "$REPO" checkout -q -B "$SAME_REF"
-  PROMPT_CAPTURE="$WORKDIR/current-branch-prompt.txt"
-  env PATH="$PROMPT_STUB_PATH" CEREBRO_SESSION_ID="$ESESS" \
-    PROMPT_CAPTURE="$PROMPT_CAPTURE" \
-    "$CEREBRO_BIN" execute "$REPO" --prompt "tighten mechanics" \
-      --branch "$SAME_REF" >/dev/null 2>&1
-  crc=$?
-  cprompt="$(cat "$PROMPT_CAPTURE" 2>/dev/null || true)"
-  git -C "$REPO" checkout -q "$BRANCH"
-  if [[ $crc -eq 0 && "$cprompt" == *"EXISTING-BRANCH MODE"* \
-        && "$cprompt" == *"Fetch and check out the existing branch named '$SAME_REF'"* \
-        && "$cprompt" == *"Do NOT create a new branch"* \
-        && "$cprompt" == *"Do NOT open a new pull request"* \
-        && "$cprompt" != *"branch from the freshly-fetched base, implement, commit, push, and open a PR via gh"* ]]; then
-    printf 'PASS  126d current --branch implies existing branch\n'; pass=$((pass + 1))
-  else
-    printf 'FAIL  126d current --branch prompt wrong [rc=%d prompt=%s]\n' \
-      "$crc" "$cprompt"; fail=$((fail + 1))
-    failures+=("126d current --branch prompt :: rc=$crc")
-  fi
   # --- 129. stale fallback: a stored id the provider rejects retries fresh
   # (without --resume) and overwrites the store with the new id. ---
   REJECT_STUB_DIR="$WORKDIR/claude-reject-stub"
@@ -1327,15 +1303,130 @@ EOF
       "$wrc" "$invocations" "$stored_id" "$stored_status"; fail=$((fail + 1))
     failures+=("130 mutating resume re-run :: rc=$wrc invocations=$invocations id=$stored_id status=$stored_status")
   fi
+
+  # --- 145. execute runs the child in an isolated worktree: it announces the
+  # worktree path, the worktree persists after the run, and the user's MAIN
+  # checkout (including a pre-existing uncommitted file) is left untouched. ---
+  WTSESS="wt-session"; WTDIR="$CEREBRO_HOME/sessions/$WTSESS"
+  mkdir -p "$WTDIR/children"; : > "$WTDIR/transcript.jsonl"
+  printf 'precious local work\n' > "$REPO/MY-UNCOMMITTED.txt"
+  main_head_before="$(git -C "$REPO" rev-parse HEAD)"
+  main_branch_before="$(git -C "$REPO" rev-parse --abbrev-ref HEAD)"
+  wtout="$(env PATH="$ID_STUB_PATH" CEREBRO_SESSION_ID="$WTSESS" \
+    "$CEREBRO_BIN" execute "$REPO" --prompt "do work in a worktree" 2>/dev/null)"
+  wt145="$(printf '%s\n' "$wtout" | sed -n 's/^=== TASK WORKTREE: \(.*\) (branch .*$/\1/p' | head -1)"
+  main_head_after="$(git -C "$REPO" rev-parse HEAD)"
+  main_branch_after="$(git -C "$REPO" rev-parse --abbrev-ref HEAD)"
+  if [[ -n "$wt145" && -d "$wt145" && "$wt145" == "$CEREBRO_HOME/worktrees/"* ]] \
+     && git -C "$wt145" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+     && [[ -f "$REPO/MY-UNCOMMITTED.txt" \
+           && "$(cat "$REPO/MY-UNCOMMITTED.txt")" == "precious local work" \
+           && "$main_head_after" == "$main_head_before" \
+           && "$main_branch_after" == "$main_branch_before" ]]; then
+    printf 'PASS  145  execute runs in a persistent worktree; main checkout untouched\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  145  worktree isolation wrong [wt=%s exists=%d main_uncommitted=%d head=%s/%s]\n' \
+      "$wt145" "$([[ -d "$wt145" ]] && echo 1 || echo 0)" \
+      "$([[ -f "$REPO/MY-UNCOMMITTED.txt" ]] && echo 1 || echo 0)" \
+      "$main_head_before" "$main_head_after"; fail=$((fail + 1))
+    failures+=("145 worktree isolation :: wt=$wt145")
+  fi
+  rm -f "$REPO/MY-UNCOMMITTED.txt"
+
+  # --- 146. a follow-up addressed by the WORKTREE path reuses it: apply-review
+  # with <wt> as <repo> commits on that worktree's branch, in that same
+  # worktree, and creates NO new worktree. ---
+  COMMIT_STUB_DIR="$WORKDIR/claude-commit-stub"
+  mkdir -p "$COMMIT_STUB_DIR"
+  cat > "$COMMIT_STUB_DIR/claude" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"COMMITSTUB-1"}'
+printf 'applied by follow-up\n' >> applied.txt
+git add applied.txt >/dev/null 2>&1
+git commit -q -m "stub follow-up commit" >/dev/null 2>&1
+printf '%s\n' '{"type":"result","subtype":"success","result":"ok"}'
+exit 0
+EOF
+  chmod +x "$COMMIT_STUB_DIR/claude"
+  COMMIT_STUB_PATH="$COMMIT_STUB_DIR:$PATH"
+  FUSESS="followup-session"; FUDIR="$CEREBRO_HOME/sessions/$FUSESS"
+  mkdir -p "$FUDIR/children"; : > "$FUDIR/transcript.jsonl"
+  WT_FU="$CEREBRO_HOME/worktrees/fu-reuse-test"
+  git -C "$REPO" worktree add -q -b feat/fu-reuse "$WT_FU" main >/dev/null 2>&1
+  fu_head_before="$(git -C "$WT_FU" rev-parse HEAD)"
+  wt_count_before="$(find "$CEREBRO_HOME/worktrees" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+  env PATH="$COMMIT_STUB_PATH" CEREBRO_SESSION_ID="$FUSESS" \
+    "$CEREBRO_BIN" apply-review "$WT_FU" --prompt "apply the fix" >/dev/null 2>&1
+  fu_rc=$?
+  fu_head_after="$(git -C "$WT_FU" rev-parse HEAD)"
+  fu_branch_after="$(git -C "$WT_FU" rev-parse --abbrev-ref HEAD)"
+  wt_count_after="$(find "$CEREBRO_HOME/worktrees" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+  if [[ $fu_rc -eq 0 && "$fu_branch_after" == "feat/fu-reuse" \
+        && "$fu_head_after" != "$fu_head_before" \
+        && -f "$WT_FU/applied.txt" \
+        && "$wt_count_before" == "$wt_count_after" ]]; then
+    printf 'PASS  146  follow-up addressed by worktree path reuses it (no new worktree)\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  146  worktree reuse wrong [rc=%d branch=%s head=%s/%s count=%s/%s]\n' \
+      "$fu_rc" "$fu_branch_after" "$fu_head_before" "$fu_head_after" \
+      "$wt_count_before" "$wt_count_after"; fail=$((fail + 1))
+    failures+=("146 worktree reuse :: rc=$fu_rc branch=$fu_branch_after")
+  fi
+
+  # --- 147. `cerebro worktrees cleanup` removes a stale worktree (its branch has
+  # no open PR and no unpushed commits) but keeps one with unpushed commits and
+  # one whose branch has a (simulated) open PR. ---
+  WT_GC_STALE="$CEREBRO_HOME/worktrees/gc-stale"
+  WT_GC_AHEAD="$CEREBRO_HOME/worktrees/gc-ahead"
+  WT_GC_PR="$CEREBRO_HOME/worktrees/gc-pr"
+  git -C "$REPO" worktree add -q -b feat/gc-stale "$WT_GC_STALE" main >/dev/null 2>&1
+  git -C "$REPO" worktree add -q -b feat/gc-ahead "$WT_GC_AHEAD" main >/dev/null 2>&1
+  git -C "$REPO" worktree add -q -b feat/gc-pr    "$WT_GC_PR"    main >/dev/null 2>&1
+  # gc-ahead carries a commit ahead of the base ref (unpushed) -> must be kept.
+  printf 'ahead\n' >> "$WT_GC_AHEAD/a.txt"
+  git -C "$WT_GC_AHEAD" add a.txt >/dev/null 2>&1
+  git -C "$WT_GC_AHEAD" commit -q -m "unpushed work" >/dev/null 2>&1
+  # gh stub: report an OPEN PR only for feat/gc-pr; no PR (exit 1) otherwise.
+  GC_GH_DIR="$WORKDIR/gc-gh-stub"; mkdir -p "$GC_GH_DIR"
+  cat > "$GC_GH_DIR/gh" <<'EOF'
+#!/usr/bin/env bash
+br=""; prev=""
+for a in "$@"; do [[ "$prev" == "view" ]] && br="$a"; prev="$a"; done
+[[ "$br" == "feat/gc-pr" ]] && { echo OPEN; exit 0; }
+exit 1
+EOF
+  chmod +x "$GC_GH_DIR/gh"
+  env PATH="$GC_GH_DIR:$PATH" CEREBRO_SESSION_ID="$WTSESS" \
+    "$CEREBRO_BIN" worktrees cleanup >/dev/null 2>&1
+  if [[ ! -d "$WT_GC_STALE" && -d "$WT_GC_AHEAD" && -d "$WT_GC_PR" ]]; then
+    printf 'PASS  147  worktrees cleanup removes stale, keeps unpushed + open-PR worktrees\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  147  cleanup verdicts wrong [stale=%d ahead=%d pr=%d]\n' \
+      "$([[ -d "$WT_GC_STALE" ]] && echo 1 || echo 0)" \
+      "$([[ -d "$WT_GC_AHEAD" ]] && echo 1 || echo 0)" \
+      "$([[ -d "$WT_GC_PR" ]] && echo 1 || echo 0)"; fail=$((fail + 1))
+    failures+=("147 worktrees cleanup verdicts")
+  fi
+  # Tidy the kept test worktrees so they don't perturb later worktree scans.
+  for w in "$WT_FU" "$WT_GC_AHEAD" "$WT_GC_PR"; do
+    git -C "$REPO" worktree remove --force "$w" >/dev/null 2>&1 || true
+  done
+  git -C "$REPO" worktree prune >/dev/null 2>&1 || true
+  for b in feat/fu-reuse feat/gc-stale feat/gc-ahead feat/gc-pr; do
+    git -C "$REPO" branch -D "$b" >/dev/null 2>&1 || true
+  done
 else
   printf 'SKIP  125  execute child-session capture (claude stub unavailable)\n'
   printf 'SKIP  125b execute resume=none log (claude stub unavailable)\n'
   printf 'SKIP  126  same-branch execute isolation (claude stub unavailable)\n'
   printf 'SKIP  126b completed execute no-auto-resume (claude stub unavailable)\n'
-  printf 'SKIP  126c same base/branch existing-branch prompt (claude stub unavailable)\n'
-  printf 'SKIP  126d current --branch existing-branch prompt (claude stub unavailable)\n'
+  printf 'SKIP  126c distinct base/branch stacked-mode prompt (claude stub unavailable)\n'
   printf 'SKIP  129  execute stale fallback (claude stub unavailable)\n'
   printf 'SKIP  130  execute mutating-resume no-rerun (claude stub unavailable)\n'
+  printf 'SKIP  145  execute worktree isolation (claude stub unavailable)\n'
+  printf 'SKIP  146  follow-up worktree reuse (claude stub unavailable)\n'
+  printf 'SKIP  147  worktrees cleanup (claude stub unavailable)\n'
 fi
 
 # codex stub: emulate `codex exec --json` -- stream JSONL events on stdout
@@ -1665,16 +1756,25 @@ if [[ -x "$PAIR_STUB_DIR/claude" ]]; then
     failures+=("134d restart fifo not cleaned :: $rst_fifo")
   fi
 
-  # --- 134e. execute --pair restart actually reverts the strayed work ---
-  # 134c proves the RESTART REQUESTED block + fifo cleanup but would pass even if
-  # execute_restart_revert were a no-op. This case gives the strayed child a real
-  # footprint -- a strayed branch checked out, a committed (tracked) change, an
-  # extra uncommitted edit, and an untracked file -- then asserts the restart
-  # leaves a verifiable LOCAL clean slate: back on the base branch (main), a
-  # clean working tree, and the strayed branch deleted.
-  STRAYED_BR="feat/strayed-restart-revert"
-  restart_mess_drive() {
-    local f="" clog i
+  # --- 134e. execute --pair restart tears down the strayed run entirely ---
+  # The child works in an ISOLATED worktree on a FRESH branch. This drives a
+  # real strayed footprint INSIDE that worktree -- a new branch with a commit --
+  # then asserts the restart deletes the local branch, removes the worktree, and
+  # attempts the remote/PR teardown (via gh), all while a pre-existing
+  # uncommitted file in the user's MAIN checkout survives untouched.
+  STRAY_BR="feat/strayed-fresh-branch"
+  GC_CLOSE_LOG="$WORKDIR/restart-gh-close.log"
+  GC_CLOSE_DIR="$WORKDIR/restart-gh-stub"; mkdir -p "$GC_CLOSE_DIR"
+  cat > "$GC_CLOSE_DIR/gh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$GC_CLOSE_LOG"
+exit 0
+EOF
+  chmod +x "$GC_CLOSE_DIR/gh"
+  : > "$GC_CLOSE_LOG"
+  printf 'precious main-checkout work\n' > "$REPO/RESTART-PRECIOUS.txt"
+  restart_stray_drive() {
+    local f="" clog i wt
     for i in $(seq 1 400); do
       f="$(ls "$PDIR"/children/*.steer.fifo 2>/dev/null | head -1)"
       if [[ -n "$f" ]]; then
@@ -1684,92 +1784,48 @@ if [[ -x "$PAIR_STUB_DIR/claude" ]]; then
       sleep 0.05
     done
     [[ -n "$f" ]] || return 0
-    # Simulate the strayed child's footprint: branch off, commit a tracked
-    # change, leave one uncommitted edit and one untracked file behind.
-    git -C "$REPO" checkout -q -b "$STRAYED_BR"
-    printf 'strayed committed change\n' >> "$REPO/a.txt"
-    git -C "$REPO" add a.txt
-    git -C "$REPO" commit -q -m "strayed work"
-    printf 'strayed uncommitted edit\n' >> "$REPO/a.txt"
-    printf 'strayed junk\n' > "$REPO/strayed-untracked.txt"
-    "$CEREBRO_BIN" restart "$f" "strayed mess to revert" >/dev/null 2>&1
+    # Find the worktree this paired execute created (the new dir vs the snapshot).
+    ls -1 "$CEREBRO_HOME/worktrees" 2>/dev/null | sort > "$WORKDIR/wt-after"
+    wt="$CEREBRO_HOME/worktrees/$(comm -13 "$WORKDIR/wt-before" "$WORKDIR/wt-after" | head -1)"
+    printf '%s' "$wt" > "$WORKDIR/stray-wt"
+    # Simulate the strayed child's footprint: a fresh branch + a commit, INSIDE
+    # the worktree (never the user's main checkout).
+    git -C "$wt" checkout -q -b "$STRAY_BR" 2>/dev/null
+    printf 'strayed branch work\n' >> "$wt/a.txt"
+    git -C "$wt" add a.txt 2>/dev/null
+    git -C "$wt" commit -q -m "strayed work" 2>/dev/null
+    "$CEREBRO_BIN" restart "$f" "strayed onto a fresh branch" >/dev/null 2>&1
   }
 
   : > "$PAIR_ARGV_LOG"
-  restart_mess_drive &
-  MESS_PID=$!
-  env PATH="$PAIR_STUB_PATH" CEREBRO_SESSION_ID="$PSESS" CEREBRO_PAIR_IDLE=10 \
-    "$CEREBRO_BIN" execute "$REPO" --prompt "do the work then stray off" --pair \
+  ls -1 "$CEREBRO_HOME/worktrees" 2>/dev/null | sort > "$WORKDIR/wt-before"
+  restart_stray_drive &
+  STRAY_PID=$!
+  env PATH="$GC_CLOSE_DIR:$PAIR_STUB_PATH" CEREBRO_SESSION_ID="$PSESS" CEREBRO_PAIR_IDLE=10 \
+    "$CEREBRO_BIN" execute "$REPO" --prompt "do the work then stray off-branch" --pair \
     >/dev/null 2>&1
-  wait "$MESS_PID" 2>/dev/null
-  mess_head="$(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null)"
-  mess_dirty="$(git -C "$REPO" status --porcelain 2>/dev/null)"
-  mess_branch=0
-  git -C "$REPO" show-ref --verify --quiet "refs/heads/$STRAYED_BR" && mess_branch=1
-  if [[ "$mess_head" == "main" && -z "$mess_dirty" && $mess_branch -eq 0 ]]; then
-    printf 'PASS  134e  execute --pair restart reverts strayed tree+branch to clean slate\n'; pass=$((pass + 1))
+  wait "$STRAY_PID" 2>/dev/null
+  stray_wt="$(cat "$WORKDIR/stray-wt" 2>/dev/null || true)"
+  stray_branch_gone=0
+  git -C "$REPO" show-ref --verify --quiet "refs/heads/$STRAY_BR" || stray_branch_gone=1
+  stray_wt_gone=0
+  [[ -n "$stray_wt" && ! -d "$stray_wt" ]] && stray_wt_gone=1
+  stray_main_ok=0
+  [[ -f "$REPO/RESTART-PRECIOUS.txt" \
+     && "$(cat "$REPO/RESTART-PRECIOUS.txt")" == "precious main-checkout work" ]] && stray_main_ok=1
+  stray_remote_attempted=0
+  grep -q "pr close $STRAY_BR --delete-branch" "$GC_CLOSE_LOG" 2>/dev/null && stray_remote_attempted=1
+  if [[ $stray_branch_gone -eq 1 && $stray_wt_gone -eq 1 && $stray_main_ok -eq 1 \
+        && $stray_remote_attempted -eq 1 ]]; then
+    printf 'PASS  134e  execute --pair restart tears down fresh branch + PR + worktree; main intact\n'; pass=$((pass + 1))
   else
-    printf 'FAIL  134e  restart did not reach a clean slate [head=%s dirty=%s strayed_branch=%d]\n' \
-      "$mess_head" "$mess_dirty" "$mess_branch"; fail=$((fail + 1))
-    failures+=("134e restart revert :: head=$mess_head dirty=$mess_dirty branch=$mess_branch")
+    printf 'FAIL  134e  restart teardown wrong [branch_gone=%d wt_gone=%d main_ok=%d remote=%d wt=%s]\n' \
+      "$stray_branch_gone" "$stray_wt_gone" "$stray_main_ok" "$stray_remote_attempted" "$stray_wt"; fail=$((fail + 1))
+    failures+=("134e restart teardown :: branch_gone=$stray_branch_gone wt_gone=$stray_wt_gone main_ok=$stray_main_ok")
   fi
-  # Safety net: restore REPO for the remaining tests even if the assertion failed.
-  git -C "$REPO" checkout -q main 2>/dev/null || true
-  git -C "$REPO" reset -q --hard 2>/dev/null || true
-  git -C "$REPO" clean -fdq 2>/dev/null || true
-  git -C "$REPO" branch -D "$STRAYED_BR" >/dev/null 2>&1 || true
-
-  # --- 134f. execute --pair restart rewinds commits made on the SAME branch ---
-  # 134e covers a SEPARATE strayed branch (deleting it undoes the work). In
-  # existing-branch mode (--base == --branch) the child commits onto the base
-  # branch itself, so there is no separate branch to delete -- a no-op reset to
-  # HEAD would leave this run's commits in place. The restart must rewind the
-  # branch to the commit it was on BEFORE the run. This case commits a tracked
-  # change directly onto the existing branch (plus uncommitted + untracked
-  # junk), then asserts HEAD is back at the captured pre-run commit, clean.
-  same_pre_sha="$(git -C "$REPO" rev-parse HEAD 2>/dev/null)"
-  restart_same_drive() {
-    local f="" clog i
-    for i in $(seq 1 400); do
-      f="$(ls "$PDIR"/children/*.steer.fifo 2>/dev/null | head -1)"
-      if [[ -n "$f" ]]; then
-        clog="${f%.steer.fifo}.jsonl"
-        grep -q '"type":"result"' "$clog" 2>/dev/null && break
-      fi
-      sleep 0.05
-    done
-    [[ -n "$f" ]] || return 0
-    # Strayed footprint ON the existing branch: a commit plus uncommitted and
-    # untracked junk -- and NO separate branch is ever created.
-    printf 'same-branch committed change\n' >> "$REPO/a.txt"
-    git -C "$REPO" add a.txt
-    git -C "$REPO" commit -q -m "strayed same-branch work"
-    printf 'same-branch uncommitted edit\n' >> "$REPO/a.txt"
-    printf 'same-branch junk\n' > "$REPO/same-untracked.txt"
-    "$CEREBRO_BIN" restart "$f" "same-branch mess to revert" >/dev/null 2>&1
-  }
-
-  : > "$PAIR_ARGV_LOG"
-  restart_same_drive &
-  SAME_PID=$!
-  env PATH="$PAIR_STUB_PATH" CEREBRO_SESSION_ID="$PSESS" CEREBRO_PAIR_IDLE=10 \
-    "$CEREBRO_BIN" execute "$REPO" --prompt "do the work then stray on-branch" \
-    --base main --branch main --pair >/dev/null 2>&1
-  wait "$SAME_PID" 2>/dev/null
-  same_head="$(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null)"
-  same_sha="$(git -C "$REPO" rev-parse HEAD 2>/dev/null)"
-  same_dirty="$(git -C "$REPO" status --porcelain 2>/dev/null)"
-  if [[ "$same_head" == "main" && "$same_sha" == "$same_pre_sha" && -z "$same_dirty" ]]; then
-    printf 'PASS  134f  execute --pair restart rewinds same-branch commits to pre-run\n'; pass=$((pass + 1))
-  else
-    printf 'FAIL  134f  restart left same-branch commits [head=%s sha=%s pre=%s dirty=%s]\n' \
-      "$same_head" "$same_sha" "$same_pre_sha" "$same_dirty"; fail=$((fail + 1))
-    failures+=("134f same-branch revert :: head=$same_head sha=$same_sha pre=$same_pre_sha")
-  fi
-  # Safety net: restore REPO for the remaining tests even if the assertion failed.
-  git -C "$REPO" checkout -q main 2>/dev/null || true
-  git -C "$REPO" reset -q --hard "$same_pre_sha" 2>/dev/null || true
-  git -C "$REPO" clean -fdq 2>/dev/null || true
+  # Safety net: drop the strayed branch + the main-checkout marker file.
+  git -C "$REPO" branch -D "$STRAY_BR" >/dev/null 2>&1 || true
+  rm -f "$REPO/RESTART-PRECIOUS.txt"
 
   # --- 135. WITHOUT --pair, no stream-json input / session pinning / banner ---
   : > "$PAIR_ARGV_LOG"

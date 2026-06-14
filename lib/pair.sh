@@ -165,6 +165,56 @@ pair_feed() {
   fi
 }
 
+# ----- per-task worktrees --------------------------------------------------
+# Every `cerebro execute` runs its child in an isolated git worktree under
+# $CEREBRO_HOME/worktrees/<ckey> instead of the user's live checkout, so an
+# agent never touches the main working tree and a restart's clean slate is just
+# "delete this run's branch + worktree + PR". The worktree dir name IS the
+# execute task's child-session key (ckey, a 16-hex digest), so it is stable
+# across resume (same task -> same worktree) and lets `cerebro worktrees` map a
+# worktree back to its owning execute child.
+
+# execute_worktree_path <ckey> -- the stable worktree dir for one execute task.
+execute_worktree_path() {
+  printf '%s\n' "$CEREBRO_HOME/worktrees/$1"
+}
+
+# execute_worktree_create <repo> <wt> <base-ref> -- ensure <wt> is a registered
+# git worktree of <repo> checked out at <base-ref>. No-op when <wt> already
+# exists as a worktree (resume reuse). Best-effort fetch keeps the start point
+# current; the child re-fetches and branches inside the worktree regardless, so
+# a missing remote (no origin) is not fatal.
+execute_worktree_create() {
+  local repo="$1" wt="$2" baseref="$3"
+  mkdir -p "$(dirname "$wt")" || die "execute: cannot create worktrees dir at $(dirname "$wt")"
+  # Reuse on resume: if the dir is already a live worktree, do nothing. Probing
+  # the worktree directly (rather than string-matching `worktree list` output)
+  # sidesteps git's path canonicalisation of symlinked prefixes.
+  if [[ -d "$wt" ]] && git -C "$wt" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    return 0
+  fi
+  git -C "$repo" fetch origin "$baseref" >/dev/null 2>&1 || true
+  git -C "$repo" worktree add --detach "$wt" "origin/$baseref" >/dev/null 2>&1 \
+    || git -C "$repo" worktree add --detach "$wt" "$baseref" >/dev/null 2>&1 \
+    || git -C "$repo" worktree add --detach "$wt" >/dev/null 2>&1 \
+    || die "execute: cannot create worktree at $wt"
+}
+
+# execute_worktree_branch <wt> -- the branch the child produced in the worktree
+# (empty or "HEAD" when it is still detached, i.e. no branch was created).
+execute_worktree_branch() {
+  git -C "$1" rev-parse --abbrev-ref HEAD 2>/dev/null || true
+}
+
+# execute_worktree_remove <repo> <wt> -- best-effort teardown of a worktree and
+# its admin entry. Safe to call when <wt> is already gone.
+execute_worktree_remove() {
+  local repo="$1" wt="$2"
+  git -C "$repo" worktree remove --force "$wt" >/dev/null 2>&1 || true
+  rm -rf "$wt" 2>/dev/null || true
+  git -C "$repo" worktree prune >/dev/null 2>&1 || true
+}
+
 # pair_report <pair> <child_log> -- after a paired child exits, fold the live
 # steering it received (recorded to the .steering.md beside its log as each
 # message was injected) back onto stdout as a compact bullet block for the

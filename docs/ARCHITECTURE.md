@@ -353,14 +353,35 @@ Steering's heavier sibling is `cerebro restart`: where steer nudges a
 live child, restart ABANDONS a strayed one. It writes one `R <base64>`
 line down the same FIFO; the pump reaps the child process group, drops a
 `.restart` sidecar holding the diagnosis (mirroring the `.stalled`
-stall path), and exits. `cerebro execute` then reverts the strayed work
-to a clean slate (drops the working tree, tears down the strayed branch
-and its PR — never the base branch), marks the child done so it is never
-resumed, and returns 0 with a `=== RESTART REQUESTED ===` block carrying
-the diagnosis, so the orchestrator can relaunch a fresh execute with a
-corrected prompt. An observer session compares the live work against the
-target's `spec.md` and, by default, FLAGS drift to the user (who then
-decides to restart); it acts autonomously only when pre-authorised.
+stall path), and exits. Because execute always runs the child in its own
+worktree on a FRESH branch (see "Per-task worktrees" below), the clean
+slate is unconditional: `cerebro execute` tears down the branch, its PR,
+and the worktree (the user's main checkout was never touched), marks the
+child done so it is never resumed, and returns 0 with a
+`=== RESTART REQUESTED ===` block carrying the diagnosis, so the
+orchestrator can relaunch a fresh execute with a corrected prompt. An
+observer session compares the live work against the target's `spec.md`
+and, by default, FLAGS drift to the user (who then decides to restart);
+it acts autonomously only when pre-authorised.
+
+### Per-task worktrees
+
+Every `cerebro execute` runs its child in a private git worktree under
+`$CEREBRO_HOME/worktrees/<ckey>` rather than the user's live checkout,
+so an agent can never disturb the user's working tree. The worktree dir
+name IS the execute task's child-session key (`ckey`), so it is stable
+across resume (same task → same worktree) and maps a worktree back to
+its owning child. The worktree shares the repo's `.git` and remotes, so
+the child's fetch / branch / commit / push / `gh pr create` all work
+unchanged. On success execute ANNOUNCES the worktree path
+(`=== TASK WORKTREE: <path> ===`); the orchestrator passes that path as
+the `<repo>` argument for the task's follow-up review / apply-review /
+doc-write / restart — a worktree is itself a valid git dir, so those
+commands need no special-casing. Worktrees PERSIST between runs
+(follow-ups reuse them) and are removed only by a restart (which tears
+the task down entirely) or by `cerebro worktrees cleanup`, which GCs
+worktrees whose branch has no open PR, no in-flight cerebro child, and
+no unpushed commits (anything it cannot positively clear is kept).
 
 ### 10. Incremental reviews keyed by repo identity
 
@@ -502,7 +523,8 @@ lib/python/            # child_store(_lib).py (locked JSON store),
                        # parse_stream.py (claude stream), codex_capture.py
                        # (codex stream), pair_pump.py / observe_pump.py /
                        # steer_send.py, path-resolution + listing helpers
-lib/pair.sh            # pair mode: banner, FIFO lifecycle, input pump, report
+lib/pair.sh            # pair mode: banner, FIFO lifecycle, input pump, report;
+                       # per-task worktree helpers (execute_worktree_*)
 lib/commands/*.sh      # one file per subcommand group; each defines cmd_*
 lib/main.sh            # dispatch table argv → cmd_*
 install.sh             # clone to ~/.local/share/cerebro, symlink into ~/bin

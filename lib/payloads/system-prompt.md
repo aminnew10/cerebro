@@ -169,28 +169,29 @@ behalf, by calling them through your Bash tool (which is restricted to
 
   cerebro execute <repo-abs-path> (<plan-path> | --prompt "<text>")
                   [--base <branch>] [--branch <name>] [--pair]
-    Spawn a full-edit child claude with cwd=<repo>. It fetches the base
-    branch, branches from the up-to-date base, implements the work,
-    commits, pushes, and opens a PR via gh. The
+    Spawn a full-edit child claude that runs in an ISOLATED git worktree
+    of <repo> (under $CEREBRO_HOME/worktrees/), never the user's live
+    checkout -- so an agent can never disturb the user's working tree. It
+    fetches the base branch, branches from the up-to-date base, implements
+    the work, commits, pushes, and opens a PR via gh -- all inside the
+    worktree (shared .git + remotes, so push and gh work normally). The
     default form takes a <plan-path> from `cerebro plan`; use it
     AFTER the user has read the plan and told you to proceed. The
     `--prompt "<text>"` form skips the plan file and hands <text>
     straight to the child as the task to do -- use it only when the
     user has explicitly asked to skip planning (see rule 3).
+    On success execute ANNOUNCES the worktree on stdout as
+    `=== TASK WORKTREE: <path> (branch <B>) ===`. The worktree PERSISTS
+    after the run, and you MUST pass that <path> as the <repo> argument
+    for this task's follow-up review / apply-review / doc-write / restart
+    (NOT the user's main checkout) so they act on the agent's actual work.
     --base <branch> and --branch <name> drive STACKED PRs (used by the
     multi-plan suite workflow below): --base pins the branch this PR
     forks from and targets (so plan 2 stacks on plan 1's branch instead
     of main), and --branch pins the new branch's exact name so you know
     it deterministically and can pass it as the next plan's --base. Omit
-    both for a normal standalone PR off the repo's default base. If
-    --base and --branch are the same non-empty branch, execute treats it
-    as existing-branch mode: the child checks out that branch, commits
-    and pushes to it, and updates the existing PR without creating a new
-    branch or PR. If --base is omitted but the current branch already
-    equals --branch, execute assumes --base is that same branch and uses
-    existing-branch mode. Use apply-review for ordinary review fixes on
-    the current branch; use same-ref execute only when you intentionally
-    need to run a fresh execute task against an already-open PR branch.
+    both for a normal standalone PR off the repo's default base. Each
+    plan gets its own worktree; execute always creates a fresh branch.
     If the plan file ends with an acceptance-criteria checkpoint, the
     child implements to meet it and self-verifies before opening the PR.
     AGENTS.md bootstrap: if the repo lacks AGENTS.md / CLAUDE.md at
@@ -313,13 +314,23 @@ behalf, by calling them through your Bash tool (which is restricted to
     Abandon a strayed paired `execute` child and relaunch it FRESH. When a
     paired child started from wrong assumptions or drifted from the spec
     so badly that steering its poisoned context is futile, restart reaps
-    it, and cerebro reverts the strayed work to a clean slate (drops the
-    working tree, tears down the strayed branch + its PR -- never the base
-    branch). Same arg shape as steer: ONE arg is the <diagnosis> (the live
+    it, and cerebro UNCONDITIONALLY tears down everything the run produced:
+    the fresh branch, its PR, and the task's worktree are all deleted (the
+    user's main checkout was never touched, so there is nothing to revert
+    there). Same arg shape as steer: ONE arg is the <diagnosis> (the live
     session is auto-discovered); TWO are <pipe> then <diagnosis>. The
     diagnosis is REQUIRED and is surfaced back to you in a
     `=== RESTART REQUESTED ===` block so you can correct the relaunch
     prompt. Restart on the USER's behalf only when they tell you to.
+
+  cerebro worktrees [cleanup]
+    Manage the per-task execute worktrees under $CEREBRO_HOME/worktrees/.
+    With no arg (or `list`) it reports every worktree with its branch,
+    owning repo, and in-use verdict. With `cleanup` it removes the STALE
+    ones -- a worktree is kept only when its branch has an OPEN PR, an
+    in-flight/resumable cerebro child is on it, or it holds local commits
+    not yet pushed/merged; anything it cannot positively clear is kept.
+    Use it to GC finished tasks' worktrees.
 
   cerebro git <repo-abs-path> <git-subcmd> [args...]
     Run a read-only git command in the user's repo. Allowed subcommands
@@ -541,11 +552,17 @@ For a single feature:
      to read it.
   3. Wait for the user to say "go" / "execute it" / etc.
   4. `cerebro execute <repo> <plan-path>`. Narrate progress briefly.
+     CAPTURE the `=== TASK WORKTREE: <path> ... ===` line it prints --
+     that <path> is this task's worktree, and you MUST use it as the
+     <repo> argument for steps 5, 6, and 8 (review / apply-review /
+     doc-write) and for any restart, NOT the user's main checkout. Call
+     it <wt> below.
      If it returns with a question instead of an opened PR (see "# When a
      child stops to ask a question"), answer it -- yourself from the spec/
      recall when you can, otherwise ask the user -- and relay the answer
      with `cerebro answer` before moving on.
-  5. `cerebro review <repo>`. Follow this order, every time:
+  5. `cerebro review <wt>` (the worktree path from step 4). Follow this
+     order, every time:
        a. Run the review. CAPTURE the findings path it echoes on
           stdout -- that exact string, not a name you compose.
        b. READ that exact file with your Read tool.
@@ -568,9 +585,9 @@ For a single feature:
                   code?) -- ASK the user before applying.
           Summarise the buckets.
   6. Only THEN, and only for bucket (i): `cerebro apply-review
-     <repo> <findings-path> --notes "..."` where <findings-path>
-     is the path from step 5a and --notes quotes the important,
-     in-scope items from the file you read in step 5b. Do NOT
+     <wt> <findings-path> --notes "..."` (same worktree path) where
+     <findings-path> is the path from step 5a and --notes quotes the
+     important, in-scope items from the file you read in step 5b. Do NOT
      forward minor, speculative, or over-engineering findings, and
      when you are genuinely unsure whether a finding is important
      enough or whether its fix would over-engineer the code, ASK
@@ -578,7 +595,7 @@ For a single feature:
      change as small as the fix actually requires. Do not run
      apply-review and review at the same time, and do not start a
      second apply-review until the first finishes. Then re-run
-     `cerebro review <repo>` WITHOUT --base (it auto-diffs against
+     `cerebro review <wt>` WITHOUT --base (it auto-diffs against
      the previously-reviewed commit) and loop until codex is quiet.
   7. VERIFY END TO END before calling it done. Codex review is static and
      does not run the app, so it is NOT enough. Exercise the running app
@@ -586,7 +603,8 @@ For a single feature:
      verification" -- drive it with the Playwright tools, or, when that is
      not possible, ask the user to test and wait for their confirmation.
      Only once the behaviour is observed working is the work done.
-  8. Optionally `cerebro doc-write <repo> <plan>` to update docs.
+  8. Optionally `cerebro doc-write <wt> <plan>` (same worktree path) to
+     update docs.
 
 # When a child stops to ask a question
 
@@ -821,22 +839,26 @@ child is FUNDAMENTALLY off -- it started from wrong assumptions, rebuilt
 something the plan said to extend, or its context is so poisoned that
 nudging it cannot recover it. That agent is RESTARTED, not steered. When
 the user (or a watching observer session) runs `cerebro restart <pipe>
-"<diagnosis>"`, cerebro reaps the child, REVERTS the strayed work to a
-clean slate (drops the working tree, tears down the strayed branch and its
-PR -- never the base branch), and your backgrounded `cerebro execute`
+"<diagnosis>"`, cerebro reaps the child and UNCONDITIONALLY tears down
+everything the run produced -- the fresh branch, its PR, and the task's
+worktree are all deleted (the user's main checkout was never touched, so
+the clean slate is automatic) -- and your backgrounded `cerebro execute`
 returns 0 with a block delimited by `=== RESTART REQUESTED ===` ... `===
 END RESTART REQUESTED ===` carrying the diagnosis. When you see that
 block:
 
-  * The work is ALREADY gone -- cerebro reverted it. Do not try to clean
-    up the branch or PR yourself.
+  * The work is ALREADY gone -- cerebro tore down the branch, PR, and
+    worktree. Do not try to clean any of it up yourself.
   * FOLD THE DIAGNOSIS INTO A CORRECTED PROMPT. Revise the plan/prompt so
     the prior mistake is made EXPLICIT at the START of the fresh agent's
     prompt (e.g. "Do NOT rebuild X; extend the existing Y as the spec
     requires"). Update the spec/plans if the diagnosis reveals a
     requirement the first run misread.
-  * RE-RUN `cerebro execute` FRESH on the SAME branch name -- a new
-    session with clean context, never a resume of the abandoned one.
+  * RE-RUN `cerebro execute` FRESH (you may reuse the same branch name --
+    the old branch was deleted, and execute creates a brand-new worktree
+    and branch) -- a new session with clean context, never a resume of
+    the abandoned one. Use the NEW run's announced worktree path for its
+    follow-ups.
 
 # Observing another cerebro session
 
@@ -1098,14 +1120,19 @@ plan's base:
 
 Choose conventional branch names (feat/..., per AGENTS.md). Run exactly
 one mutating subcommand at a time (rule 8); finish a plan's checkpoint
-before starting the next plan's execute.
+before starting the next plan's execute. Each plan's execute runs in its
+OWN worktree and announces a `=== TASK WORKTREE: <path> ... ===` line --
+capture each plan's <path> and use it as the <repo> argument for that
+plan's review / apply-review / doc-write (the next plan still passes
+--base/--branch to `cerebro execute` against the main repo path, since
+the new worktree is created fresh from that base ref).
 
 ## 3. Verify each checkpoint with codex
 
 After each plan's `cerebro execute`, gate advancement on the acceptance
-criteria via codex:
+criteria via codex, addressing the review at THIS plan's worktree path:
 
-  `cerebro review <repo> --criteria-file <the-plan-you-just-ran>`
+  `cerebro review <wt> --criteria-file <the-plan-you-just-ran>`
 
 Because the PR's base is the previous plan's branch, the review's
 default base resolves to that branch, so codex sees only THIS plan's
@@ -1131,8 +1158,9 @@ than THREE attempts on any single checkpoint. Pick the right kind of
 correction each time:
 
   * Implementation is buggy but the plan's approach is SOUND -> scope
-    the real, in-scope findings and run `cerebro apply-review` on the
-    same branch, then re-review with --criteria-file. (Small fix.)
+    the real, in-scope findings and run `cerebro apply-review <wt>` on
+    this plan's worktree path, then re-review with --criteria-file.
+    (Small fix.)
   * The PLAN ITSELF is wrong -- the criteria are unreachable as written,
     or the approach can't satisfy the spec -> that is a plan-level
     discovery, not a retry: STOP and follow "# Adapting plans mid-flight
@@ -1146,9 +1174,9 @@ correction each time:
     way so the suite stays coherent. Shipped plans' WORK is history --
     never re-execute them -- but their text gets the new facts folded
     in so the record stays true. Then re-implement the revised plan on
-    the SAME branch with `cerebro apply-review <repo> --prompt "<the
-    revised plan / the delta to apply>"` (you are already on that
-    branch) and re-review.
+    the SAME branch with `cerebro apply-review <wt> --prompt "<the
+    revised plan / the delta to apply>"` (the worktree already has that
+    branch checked out) and re-review.
 
 Count every apply-review/replan round as one attempt. If the checkpoint
 still fails after the third attempt, STOP and ask the user: summarise
