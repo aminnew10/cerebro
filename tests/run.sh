@@ -1616,6 +1616,55 @@ if [[ -x "$PAIR_STUB_DIR/claude" ]]; then
     failures+=("134 pair banner :: perr=$perr")
   fi
 
+  # --- 134c. execute --pair: `cerebro restart` abandons the child + reverts ---
+  # A background driver waits for the live child (its steer fifo + first result),
+  # then sends one `cerebro restart <fifo> "<diag>"`. The pump reaps the child
+  # and drops a `.restart` marker holding the diagnosis; `cerebro execute` reads
+  # that marker, reverts to a clean slate, and returns 0 with a RESTART REQUESTED
+  # block carrying the diagnosis (never a plain success child-log path). The
+  # block reproduces the diagnosis verbatim, so it proves the pump wrote the
+  # marker and execute consumed it end to end.
+  RESTART_DIAG="wrong approach: rebuilt X instead of extending Y"
+  restart_drive() {
+    local f="" clog i
+    for i in $(seq 1 400); do
+      f="$(ls "$PDIR"/children/*.steer.fifo 2>/dev/null | head -1)"
+      if [[ -n "$f" ]]; then
+        clog="${f%.steer.fifo}.jsonl"
+        grep -q '"type":"result"' "$clog" 2>/dev/null && break
+      fi
+      sleep 0.05
+    done
+    [[ -n "$f" ]] || return 0
+    "$CEREBRO_BIN" restart "$f" "$RESTART_DIAG" >/dev/null 2>&1
+  }
+
+  : > "$PAIR_ARGV_LOG"
+  restart_drive &
+  RESTARTER_PID=$!
+  rpout="$(env PATH="$PAIR_STUB_PATH" CEREBRO_SESSION_ID="$PSESS" CEREBRO_PAIR_IDLE=10 \
+    "$CEREBRO_BIN" execute "$REPO" --prompt "do the work to restart" --pair 2>"$WORKDIR/rperr")"
+  rprc=$?
+  wait "$RESTARTER_PID" 2>/dev/null
+  if [[ $rprc -eq 0 && "$rpout" == *"=== RESTART REQUESTED ==="* \
+        && "$rpout" == *"$RESTART_DIAG"* \
+        && "$rpout" == *"=== END RESTART REQUESTED ==="* ]]; then
+    printf 'PASS  134c  execute --pair restart reverts + surfaces diagnosis\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  134c  execute --pair restart wrong [rc=%d out=%s]\n' \
+      "$rprc" "$rpout"; fail=$((fail + 1))
+    failures+=("134c execute --pair restart :: rc=$rprc")
+  fi
+
+  # --- 134d. after restart the child was reaped: its steer fifo is gone. ---
+  rst_fifo="$(ls "$PDIR"/children/*.steer.fifo 2>/dev/null | head -1)"
+  if [[ -z "$rst_fifo" ]]; then
+    printf 'PASS  134d  restart reaped the child (steer fifo cleaned up)\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  134d  restart left a live steer fifo [%s]\n' "$rst_fifo"; fail=$((fail + 1))
+    failures+=("134d restart fifo not cleaned :: $rst_fifo")
+  fi
+
   # --- 135. WITHOUT --pair, no stream-json input / session pinning / banner ---
   : > "$PAIR_ARGV_LOG"
   env PATH="$PAIR_STUB_PATH" CEREBRO_SESSION_ID="$PSESS" \
@@ -1757,6 +1806,7 @@ EOF
         && "$obspre" == *"Start observing session observe-target2 now"* \
         && "$obslaunch" == *"Bash(cerebro observe:*)"* \
         && "$obslaunch" == *"Bash(cerebro steer:*)"* \
+        && "$obslaunch" == *"Bash(cerebro restart:*)"* \
         && "$obslaunch" != *"Bash(cerebro:*)"* \
         && "$obslaunch" != *"Edit Write"* ]]; then
     printf 'PASS  138d  cerebro --observe launches a watch-and-steer-only session\n'; pass=$((pass + 1))

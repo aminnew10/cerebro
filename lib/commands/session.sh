@@ -133,7 +133,7 @@ cmd_launch_observer() {
   # variadic --allowedTools (<tools...>), which would otherwise swallow it
   # as another tool token. With no target we stay fully interactive so the
   # user can pick which session to watch.
-  local allowed="Bash(cerebro observe:*) Bash(cerebro steer:*) Bash(cerebro status:*) Bash(cerebro list:*) Bash(cerebro recall:*) Bash(cerebro spec:*) Bash(cerebro learnings:*) Read Grep Glob WebSearch WebFetch mcp__playwright__*"
+  local allowed="Bash(cerebro observe:*) Bash(cerebro steer:*) Bash(cerebro restart:*) Bash(cerebro status:*) Bash(cerebro list:*) Bash(cerebro recall:*) Bash(cerebro spec:*) Bash(cerebro learnings:*) Read Grep Glob WebSearch WebFetch mcp__playwright__*"
   if [[ -n "$target" ]]; then
     exec claude \
       --session-id "$sid" \

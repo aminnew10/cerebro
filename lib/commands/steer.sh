@@ -28,24 +28,8 @@ cmd_steer() {
     die "steer: usage: cerebro steer [<pipe>] \"<message>\""
   fi
   [[ -n "$msg" ]] || die "steer: empty steering message"
-  if [[ -z "$fifo" ]]; then
-    local candidates=() f
-    shopt -s nullglob
-    for f in "$CEREBRO_HOME"/sessions/*/children/*.steer.fifo; do
-      steer_fifo_live "$f" && candidates+=("$f")
-    done
-    shopt -u nullglob
-    if (( ${#candidates[@]} == 0 )); then
-      die "steer: no live paired session found. Start one with --pair (e.g. 'cerebro execute <repo> ... --pair'), then run 'cerebro steer \"<message>\"'."
-    elif (( ${#candidates[@]} > 1 )); then
-      { printf 'cerebro: steer: several live paired sessions -- pass the pipe of the one you mean:\n'
-        for f in "${candidates[@]}"; do printf '  cerebro steer %s "<message>"\n' "$f"; done
-      } >&2
-      exit 1
-    fi
-    fifo="${candidates[0]}"
-  fi
-  [[ -p "$fifo" ]] || die "steer: no live paired session at $fifo (the child may have finished)"
+  pair_resolve_live_fifo "$fifo" steer
+  fifo="$PAIR_RESOLVED_FIFO"
   python3 "$CEREBRO_LIB_DIR/python/steer_send.py" "$fifo" "$msg" || die "steer: could not deliver (the child may have finished)"
   say "cerebro: steered $(basename "${fifo%.steer.fifo}")"
 }

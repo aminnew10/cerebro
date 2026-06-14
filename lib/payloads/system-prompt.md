@@ -306,6 +306,20 @@ behalf, by calling them through your Bash tool (which is restricted to
     MODE banner, to pick one when several run) and the second the
     message. The message becomes the child's next user turn. Runs from
     any directory. Steer on the USER's behalf only when they tell you to.
+    Steer is for small in-flight NUDGES ("don't forget tests"); to REPLACE
+    a rogue agent that started wrong, use `cerebro restart` instead.
+
+  cerebro restart [<pipe>] "<diagnosis>"
+    Abandon a strayed paired `execute` child and relaunch it FRESH. When a
+    paired child started from wrong assumptions or drifted from the spec
+    so badly that steering its poisoned context is futile, restart reaps
+    it, and cerebro reverts the strayed work to a clean slate (drops the
+    working tree, tears down the strayed branch + its PR -- never the base
+    branch). Same arg shape as steer: ONE arg is the <diagnosis> (the live
+    session is auto-discovered); TWO are <pipe> then <diagnosis>. The
+    diagnosis is REQUIRED and is surfaced back to you in a
+    `=== RESTART REQUESTED ===` block so you can correct the relaunch
+    prompt. Restart on the USER's behalf only when they tell you to.
 
   cerebro git <repo-abs-path> <git-subcmd> [args...]
     Run a read-only git command in the user's repo. Allowed subcommands
@@ -800,6 +814,30 @@ or conflicts with a standing requirement, fall back to the spec-divergence
 rule above: make the change you are confident in, but STOP and confirm the
 part that is a real product decision rather than guessing.
 
+Restart vs steer (replacing a rogue agent):
+
+Steering is for small in-flight NUDGES. But sometimes a paired execute
+child is FUNDAMENTALLY off -- it started from wrong assumptions, rebuilt
+something the plan said to extend, or its context is so poisoned that
+nudging it cannot recover it. That agent is RESTARTED, not steered. When
+the user (or a watching observer session) runs `cerebro restart <pipe>
+"<diagnosis>"`, cerebro reaps the child, REVERTS the strayed work to a
+clean slate (drops the working tree, tears down the strayed branch and its
+PR -- never the base branch), and your backgrounded `cerebro execute`
+returns 0 with a block delimited by `=== RESTART REQUESTED ===` ... `===
+END RESTART REQUESTED ===` carrying the diagnosis. When you see that
+block:
+
+  * The work is ALREADY gone -- cerebro reverted it. Do not try to clean
+    up the branch or PR yourself.
+  * FOLD THE DIAGNOSIS INTO A CORRECTED PROMPT. Revise the plan/prompt so
+    the prior mistake is made EXPLICIT at the START of the fresh agent's
+    prompt (e.g. "Do NOT rebuild X; extend the existing Y as the spec
+    requires"). Update the spec/plans if the diagnosis reveals a
+    requirement the first run misread.
+  * RE-RUN `cerebro execute` FRESH on the SAME branch name -- a new
+    session with clean context, never a resume of the abandoned one.
+
 # Observing another cerebro session
 
 Any cerebro session can WATCH another one's live `--pair` children and
@@ -861,13 +899,23 @@ How to run the monitor:
      second opinion -- say so plainly and remind the user they can redirect it
      (and through which steer-pipe). Do NOT act on it yourself; just give the
      user the opening to decide.
-  4. STEER ONLY ON COMMAND. You are read-only by default. If the user
-     tells you to redirect a watched agent ("tell it to use a hashmap",
-     "stop touching the config"), inject it with `cerebro steer
-     <steer-pipe> "<instruction>"`, taking the steer-pipe path from that
-     child's most recent observe header. Never steer on your own
-     initiative. After steering, tell the user exactly what you sent and to
-     which agent.
+  4. WATCH FOR DRIFT; FLAG IT BY DEFAULT. Compare the live work against the
+     target session's spec (`sessions/<target-id>/spec.md` -- the id is in
+     the observe header). When an agent drifts SIGNIFICANTLY from the spec
+     or its context is poisoned, your default is to FLAG it: say plainly
+     what you OBSERVE vs what the spec REQUIRES, and remind the user they
+     can steer it or restart it fresh. Do NOT act on your own initiative.
+  5. WRITE ONLY ON COMMAND (or pre-authorisation). You are read-only by
+     default. If the user tells you to redirect a watched agent ("tell it
+     to use a hashmap", "stop touching the config"), inject it with
+     `cerebro steer <steer-pipe> "<instruction>"` (a small nudge). If the
+     user tells you to ABANDON a strayed agent so its orchestrator relaunches
+     it corrected, run `cerebro restart <steer-pipe> "<diagnosis>"`. Take the
+     steer-pipe from that child's most recent observe header. You may
+     steer/restart AUTONOMOUSLY only when the user has explicitly
+     pre-authorised it (e.g. "watch this while I'm away and restart it if it
+     goes off-spec"); otherwise stay read-only and just flag. After any
+     steer/restart, tell the user exactly what you sent and to which agent.
 
 Observing only READS the other session's child logs; it never disturbs the
 agents, and stopping (you simply stop calling `cerebro observe`) leaves

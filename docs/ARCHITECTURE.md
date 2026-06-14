@@ -349,6 +349,19 @@ When a paired child exits, `pair_report` prints the recorded steering
 under `=== PAIR STEERING ===` markers; folding it back into the spec
 and plans is, again, orchestrator policy.
 
+Steering's heavier sibling is `cerebro restart`: where steer nudges a
+live child, restart ABANDONS a strayed one. It writes one `R <base64>`
+line down the same FIFO; the pump reaps the child process group, drops a
+`.restart` sidecar holding the diagnosis (mirroring the `.stalled`
+stall path), and exits. `cerebro execute` then reverts the strayed work
+to a clean slate (drops the working tree, tears down the strayed branch
+and its PR — never the base branch), marks the child done so it is never
+resumed, and returns 0 with a `=== RESTART REQUESTED ===` block carrying
+the diagnosis, so the orchestrator can relaunch a fresh execute with a
+corrected prompt. An observer session compares the live work against the
+target's `spec.md` and, by default, FLAGS drift to the user (who then
+decides to restart); it acts autonomously only when pre-authorised.
+
 ### 10. Incremental reviews keyed by repo identity
 
 `review-state/<repo-key>.json` (repo key = sha1 of the canonical

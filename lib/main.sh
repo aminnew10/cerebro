@@ -23,6 +23,7 @@ main() {
     doc-write) shift; cmd_doc_write "$@" ;;
     answer) shift; cmd_answer "$@" ;;
     steer) shift; cmd_steer "$@" ;;
+    restart) shift; cmd_restart "$@" ;;
     observe) shift; cmd_observe "$@" ;;
     recall) shift; cmd_recall "$@" ;;
     status) shift; cmd_status "$@" ;;

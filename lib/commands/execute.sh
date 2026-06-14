@@ -2,6 +2,51 @@
 # subcommand: execute
 # Sourced by bin/cerebro; not meant to be executed directly.
 
+# execute_restart_revert <repo> <base> <branch> -- undo a strayed paired
+# child's work so the orchestrator can relaunch FRESH "as if the agent never
+# started". Best-effort: every step is guarded so a missing remote/PR never
+# blocks the restart, and it NEVER deletes the base/default branch. Drops the
+# working tree, returns to the base ref, and tears down the strayed branch and
+# its PR (locally + on origin). Logs a one-line summary of what was undone.
+execute_restart_revert() {
+  local repo="$1" base="$2" branch="$3"
+  git -C "$repo" reset --hard >/dev/null 2>&1 || true
+  git -C "$repo" clean -fd >/dev/null 2>&1 || true
+
+  # Resolve the base ref: explicit --base, else origin/HEAD's branch, else main.
+  local baseref="$base"
+  if [[ -z "$baseref" ]]; then
+    baseref="$(git -C "$repo" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null \
+               | sed 's#^origin/##')"
+  fi
+  [[ -n "$baseref" ]] || baseref="main"
+
+  # Resolve the strayed branch: explicit --branch, else the current HEAD branch
+  # when it differs from the base ref (the reaped child was on its own branch).
+  local strayed="$branch" current
+  current="$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  if [[ -z "$strayed" && -n "$current" && "$current" != "$baseref" && "$current" != "HEAD" ]]; then
+    strayed="$current"
+  fi
+
+  git -C "$repo" checkout "$baseref" >/dev/null 2>&1 || true
+
+  local summary="reset+clean; on $baseref"
+  if [[ -n "$strayed" && "$strayed" != "$baseref" ]]; then
+    git -C "$repo" branch -D "$strayed" >/dev/null 2>&1 || true
+    summary+="; deleted local $strayed"
+    if [[ -n "$(git -C "$repo" ls-remote --heads origin "$strayed" 2>/dev/null)" ]]; then
+      if ( cd "$repo" && gh pr close "$strayed" --delete-branch >/dev/null 2>&1 ); then
+        summary+="; closed PR + deleted origin $strayed"
+      else
+        git -C "$repo" push origin --delete "$strayed" >/dev/null 2>&1 || true
+        summary+="; deleted origin $strayed"
+      fi
+    fi
+  fi
+  log_event "execute_restart_reverted" "$summary"
+}
+
 # ----- subcommand: cerebro execute <repo> <plan-path> ----------------------
 
 cmd_execute() {
@@ -217,6 +262,28 @@ cmd_execute() {
     fi
     break
   done
+
+  # Restart: the developer/observer ran `cerebro restart`, the pump reaped the
+  # child and dropped a `.restart` marker holding a diagnosis. Treat this as a
+  # clean abandonment (NOT a crash): revert the strayed work to a clean slate,
+  # mark the child done so the next execute never resumes the poisoned session,
+  # surface the diagnosis, and return 0 so the orchestrator can relaunch fresh.
+  if (( pair )) && pair_restarted "$child_log"; then
+    local diag; diag="$(pair_restart_read "$child_log")"
+    execute_restart_revert "$repo" "$base_branch" "$new_branch"
+    child_store_done "$ckey"
+    pair_cleanup "$pair"
+    pair_restart_clear "$child_log"
+    log_event "execute_restarted" "log=$child_log base=${base_branch:-default} branch=${new_branch:-auto}"
+    rm -f "$id_capture" "$msg_capture"
+    printf '=== RESTART REQUESTED ===\n'
+    printf '%s\n' "$diag"
+    printf '(repo=%s base=%s branch=%s -- the strayed work has been reverted to a clean slate)\n' \
+      "$repo" "${base_branch:-default}" "${new_branch:-auto}"
+    printf '=== END RESTART REQUESTED ===\n'
+    say "cerebro: paired child was RESTARTED -- fold the diagnosis above into a corrected plan/prompt (make the prior mistake explicit at the START), then re-run 'cerebro execute' FRESH on the same branch."
+    return 0
+  fi
 
   if (( rc != 0 )); then
     rm -f "$id_capture" "$msg_capture"

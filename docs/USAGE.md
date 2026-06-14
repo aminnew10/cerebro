@@ -113,7 +113,15 @@ review has no live-steer):
   pipe path from the banner first when several paired children run at
   once.) After each turn the child waits a short window
   (`CEREBRO_PAIR_IDLE`, default 60s) for steering; a quiet window lets
-  it finish on its own.
+  it finish on its own. Steer is for small nudges.
+* **Restart** — `cerebro restart "<diagnosis>"` is for when a paired
+  execute child has gone fundamentally off (wrong assumptions, drifted
+  from the spec) and steering its poisoned context is futile. It
+  abandons the child, reverts the strayed work to a clean slate (drops
+  the working tree, tears down the strayed branch and its PR — never the
+  base branch), and hands the orchestrator the diagnosis so it can
+  relaunch a fresh execute with a corrected prompt. Same arg shape as
+  steer (pass the pipe path first when several run at once).
 
 When the child finishes, your steering is reported back and the
 orchestrator folds it in automatically — updating the session spec and

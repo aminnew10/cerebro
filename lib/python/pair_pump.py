@@ -177,6 +177,22 @@ def mark_stalled(reason="stalled"):
     except OSError:
         pass
 
+restart_path = (child_log[:-6] if child_log.endswith(".jsonl") else child_log) + ".restart"
+
+def mark_restart(diag):
+    try:
+        with open(child_log, "a") as fh:
+            fh.write(json.dumps(
+                {"type": "result", "subtype": "restarted", "is_error": True},
+                ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    try:
+        with open(restart_path, "w") as fh:
+            fh.write(diag)
+    except OSError:
+        pass
+
 if not emit(sys.stdin.read()):
     sys.exit(0)
 
@@ -185,9 +201,11 @@ if not emit(sys.stdin.read()):
 fd = os.open(fifo, os.O_RDWR | os.O_NONBLOCK)
 buf = b""
 pending = []
+restart_pending = False
+restart_diag = ""
 
 def refill():
-    global buf
+    global buf, restart_pending, restart_diag
     try:
         chunk = os.read(fd, 65536)
     except (BlockingIOError, OSError):
@@ -203,6 +221,12 @@ def refill():
                 pending.append(base64.b64decode(s[2:]).decode("utf-8", "replace"))
             except Exception:
                 pass
+        elif s.startswith("R "):
+            try:
+                restart_diag = base64.b64decode(s[2:]).decode("utf-8", "replace")
+            except Exception:
+                restart_diag = ""
+            restart_pending = True
 
 done_turns = 0
 idle_deadline = None
@@ -211,6 +235,12 @@ last_grew = time.monotonic()
 
 while True:
     refill()
+    # A restart can arrive mid-turn or in the idle window; handling it first,
+    # before any steer/idle logic, makes it unconditional and immediate.
+    if restart_pending:
+        reap_child()
+        mark_restart(restart_diag)
+        sys.exit(0)
     if not downstream_open():
         sys.exit(0)
 
