@@ -8,6 +8,13 @@
 # blocks the restart, and it NEVER deletes the base/default branch. Drops the
 # working tree, returns to the base ref, and tears down the strayed branch and
 # its PR (locally + on origin). Logs a one-line summary of what was undone.
+#
+# LOCAL cleanup (reset/clean/checkout base/branch -D) gates the "clean slate"
+# claim: after attempting the revert this VERIFIES the repo is on the base ref,
+# the working tree is clean, and the strayed branch is gone. On success it
+# returns 0 and prints nothing; if LOCAL cleanup fell short it prints a
+# one-line description of what is still wrong (for the caller to surface) and
+# returns 1. REMOTE teardown stays best-effort and never gates the verdict.
 execute_restart_revert() {
   local repo="$1" base="$2" branch="$3"
   git -C "$repo" reset --hard >/dev/null 2>&1 || true
@@ -44,7 +51,30 @@ execute_restart_revert() {
       fi
     fi
   fi
+
+  # Verify the LOCAL clean slate. The revert above was best-effort, so confirm
+  # it actually landed: on the base ref, clean tree, strayed branch gone. Only
+  # LOCAL state gates this -- remote teardown is intentionally not checked.
+  local problems="" now_branch
+  now_branch="$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  if [[ "$now_branch" != "$baseref" ]]; then
+    problems+="; not on base ref (HEAD=${now_branch:-unknown}, expected $baseref)"
+  fi
+  if [[ -n "$(git -C "$repo" status --porcelain 2>/dev/null)" ]]; then
+    problems+="; working tree not clean"
+  fi
+  if [[ -n "$strayed" && "$strayed" != "$baseref" ]] \
+     && git -C "$repo" show-ref --verify --quiet "refs/heads/$strayed"; then
+    problems+="; strayed branch $strayed still present"
+  fi
+
+  if [[ -n "$problems" ]]; then
+    log_event "execute_restart_revert_incomplete" "$summary$problems"
+    printf 'LOCAL cleanup incomplete: %s' "${problems#; }"
+    return 1
+  fi
   log_event "execute_restart_reverted" "$summary"
+  return 0
 }
 
 # ----- subcommand: cerebro execute <repo> <plan-path> ----------------------
@@ -270,16 +300,23 @@ cmd_execute() {
   # surface the diagnosis, and return 0 so the orchestrator can relaunch fresh.
   if (( pair )) && pair_restarted "$child_log"; then
     local diag; diag="$(pair_restart_read "$child_log")"
-    execute_restart_revert "$repo" "$base_branch" "$new_branch"
+    local revert_problems revert_rc
+    revert_problems="$(execute_restart_revert "$repo" "$base_branch" "$new_branch")"
+    revert_rc=$?
     child_store_done "$ckey"
     pair_cleanup "$pair"
     pair_restart_clear "$child_log"
-    log_event "execute_restarted" "log=$child_log base=${base_branch:-default} branch=${new_branch:-auto}"
+    log_event "execute_restarted" "log=$child_log base=${base_branch:-default} branch=${new_branch:-auto} clean=$(( revert_rc == 0 ))"
     rm -f "$id_capture" "$msg_capture"
     printf '=== RESTART REQUESTED ===\n'
     printf '%s\n' "$diag"
-    printf '(repo=%s base=%s branch=%s -- the strayed work has been reverted to a clean slate)\n' \
-      "$repo" "${base_branch:-default}" "${new_branch:-auto}"
+    if (( revert_rc == 0 )); then
+      printf '(repo=%s base=%s branch=%s -- the strayed work has been reverted to a clean slate)\n' \
+        "$repo" "${base_branch:-default}" "${new_branch:-auto}"
+    else
+      printf '(repo=%s base=%s branch=%s -- WARNING: the repo is NOT a clean slate: %s -- reconcile the repo manually before relaunching)\n' \
+        "$repo" "${base_branch:-default}" "${new_branch:-auto}" "$revert_problems"
+    fi
     printf '=== END RESTART REQUESTED ===\n'
     say "cerebro: paired child was RESTARTED -- fold the diagnosis above into a corrected plan/prompt (make the prior mistake explicit at the START), then re-run 'cerebro execute' FRESH on the same branch."
     return 0

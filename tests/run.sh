@@ -1665,6 +1665,60 @@ if [[ -x "$PAIR_STUB_DIR/claude" ]]; then
     failures+=("134d restart fifo not cleaned :: $rst_fifo")
   fi
 
+  # --- 134e. execute --pair restart actually reverts the strayed work ---
+  # 134c proves the RESTART REQUESTED block + fifo cleanup but would pass even if
+  # execute_restart_revert were a no-op. This case gives the strayed child a real
+  # footprint -- a strayed branch checked out, a committed (tracked) change, an
+  # extra uncommitted edit, and an untracked file -- then asserts the restart
+  # leaves a verifiable LOCAL clean slate: back on the base branch (main), a
+  # clean working tree, and the strayed branch deleted.
+  STRAYED_BR="feat/strayed-restart-revert"
+  restart_mess_drive() {
+    local f="" clog i
+    for i in $(seq 1 400); do
+      f="$(ls "$PDIR"/children/*.steer.fifo 2>/dev/null | head -1)"
+      if [[ -n "$f" ]]; then
+        clog="${f%.steer.fifo}.jsonl"
+        grep -q '"type":"result"' "$clog" 2>/dev/null && break
+      fi
+      sleep 0.05
+    done
+    [[ -n "$f" ]] || return 0
+    # Simulate the strayed child's footprint: branch off, commit a tracked
+    # change, leave one uncommitted edit and one untracked file behind.
+    git -C "$REPO" checkout -q -b "$STRAYED_BR"
+    printf 'strayed committed change\n' >> "$REPO/a.txt"
+    git -C "$REPO" add a.txt
+    git -C "$REPO" commit -q -m "strayed work"
+    printf 'strayed uncommitted edit\n' >> "$REPO/a.txt"
+    printf 'strayed junk\n' > "$REPO/strayed-untracked.txt"
+    "$CEREBRO_BIN" restart "$f" "strayed mess to revert" >/dev/null 2>&1
+  }
+
+  : > "$PAIR_ARGV_LOG"
+  restart_mess_drive &
+  MESS_PID=$!
+  env PATH="$PAIR_STUB_PATH" CEREBRO_SESSION_ID="$PSESS" CEREBRO_PAIR_IDLE=10 \
+    "$CEREBRO_BIN" execute "$REPO" --prompt "do the work then stray off" --pair \
+    >/dev/null 2>&1
+  wait "$MESS_PID" 2>/dev/null
+  mess_head="$(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  mess_dirty="$(git -C "$REPO" status --porcelain 2>/dev/null)"
+  mess_branch=0
+  git -C "$REPO" show-ref --verify --quiet "refs/heads/$STRAYED_BR" && mess_branch=1
+  if [[ "$mess_head" == "main" && -z "$mess_dirty" && $mess_branch -eq 0 ]]; then
+    printf 'PASS  134e  execute --pair restart reverts strayed tree+branch to clean slate\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  134e  restart did not reach a clean slate [head=%s dirty=%s strayed_branch=%d]\n' \
+      "$mess_head" "$mess_dirty" "$mess_branch"; fail=$((fail + 1))
+    failures+=("134e restart revert :: head=$mess_head dirty=$mess_dirty branch=$mess_branch")
+  fi
+  # Safety net: restore REPO for the remaining tests even if the assertion failed.
+  git -C "$REPO" checkout -q main 2>/dev/null || true
+  git -C "$REPO" reset -q --hard 2>/dev/null || true
+  git -C "$REPO" clean -fdq 2>/dev/null || true
+  git -C "$REPO" branch -D "$STRAYED_BR" >/dev/null 2>&1 || true
+
   # --- 135. WITHOUT --pair, no stream-json input / session pinning / banner ---
   : > "$PAIR_ARGV_LOG"
   env PATH="$PAIR_STUB_PATH" CEREBRO_SESSION_ID="$PSESS" \
