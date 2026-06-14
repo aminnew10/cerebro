@@ -2,21 +2,31 @@
 # subcommand: execute
 # Sourced by bin/cerebro; not meant to be executed directly.
 
-# execute_restart_revert <repo> <base> <branch> -- undo a strayed paired
-# child's work so the orchestrator can relaunch FRESH "as if the agent never
-# started". Best-effort: every step is guarded so a missing remote/PR never
-# blocks the restart, and it NEVER deletes the base/default branch. Drops the
-# working tree, returns to the base ref, and tears down the strayed branch and
-# its PR (locally + on origin). Logs a one-line summary of what was undone.
+# execute_restart_revert <repo> <base> <branch> [start_sha] -- undo a strayed
+# paired child's work so the orchestrator can relaunch FRESH "as if the agent
+# never started". Best-effort: every step is guarded so a missing remote/PR
+# never blocks the restart, and it NEVER deletes the base/default branch. Drops
+# the working tree, returns to the base ref, and tears down the strayed branch
+# and its PR (locally + on origin). Logs a one-line summary of what was undone.
 #
-# LOCAL cleanup (reset/clean/checkout base/branch -D) gates the "clean slate"
-# claim: after attempting the revert this VERIFIES the repo is on the base ref,
-# the working tree is clean, and the strayed branch is gone. On success it
-# returns 0 and prints nothing; if LOCAL cleanup fell short it prints a
+# Two strayed-work shapes:
+#   * SEPARATE branch (base ref != strayed branch): the child branched off and
+#     committed there, leaving the base ref untouched -- delete the strayed
+#     branch and its PR; the base ref already holds no new commits.
+#   * SAME branch (existing-branch mode, base ref == branch): the child
+#     committed onto the base ref itself, so deleting a separate branch undoes
+#     nothing. When <start_sha> (the base ref's HEAD captured BEFORE the child
+#     launched) is given, rewind the base ref to EXACTLY that commit -- and only
+#     that commit, never further back -- to drop this run's commits.
+#
+# LOCAL cleanup gates the "clean slate" claim: after attempting the revert this
+# VERIFIES the repo is on the base ref, the working tree is clean, the strayed
+# branch is gone, and (same-branch case) HEAD is back at <start_sha>. On success
+# it returns 0 and prints nothing; if LOCAL cleanup fell short it prints a
 # one-line description of what is still wrong (for the caller to surface) and
 # returns 1. REMOTE teardown stays best-effort and never gates the verdict.
 execute_restart_revert() {
-  local repo="$1" base="$2" branch="$3"
+  local repo="$1" base="$2" branch="$3" start_sha="${4:-}"
   git -C "$repo" reset --hard >/dev/null 2>&1 || true
   git -C "$repo" clean -fd >/dev/null 2>&1 || true
 
@@ -38,8 +48,11 @@ execute_restart_revert() {
 
   git -C "$repo" checkout "$baseref" >/dev/null 2>&1 || true
 
-  local summary="reset+clean; on $baseref"
+  # same_branch is the existing-branch case: no separate strayed branch to
+  # delete because the child committed onto the base ref itself.
+  local summary="reset+clean; on $baseref" same_branch=1
   if [[ -n "$strayed" && "$strayed" != "$baseref" ]]; then
+    same_branch=0
     git -C "$repo" branch -D "$strayed" >/dev/null 2>&1 || true
     summary+="; deleted local $strayed"
     if [[ -n "$(git -C "$repo" ls-remote --heads origin "$strayed" 2>/dev/null)" ]]; then
@@ -50,6 +63,16 @@ execute_restart_revert() {
         summary+="; deleted origin $strayed"
       fi
     fi
+  fi
+
+  # Same-branch case: the child's commits live on the base ref, so reset+clean
+  # above only dropped uncommitted work -- the commits remain. Rewind the base
+  # ref to the commit it was on before this run. ONLY ever to that captured
+  # commit (never further back, never to anything but the base ref's own start
+  # point), so this can never rewrite shared history beyond THIS run's commits.
+  if (( same_branch )) && [[ -n "$start_sha" ]]; then
+    git -C "$repo" reset --hard "$start_sha" >/dev/null 2>&1 || true
+    summary+="; reset $baseref to ${start_sha:0:12}"
   fi
 
   # Verify the LOCAL clean slate. The revert above was best-effort, so confirm
@@ -66,6 +89,12 @@ execute_restart_revert() {
   if [[ -n "$strayed" && "$strayed" != "$baseref" ]] \
      && git -C "$repo" show-ref --verify --quiet "refs/heads/$strayed"; then
     problems+="; strayed branch $strayed still present"
+  fi
+  if (( same_branch )) && [[ -n "$start_sha" ]]; then
+    local now_sha; now_sha="$(git -C "$repo" rev-parse HEAD 2>/dev/null || true)"
+    if [[ "$now_sha" != "$start_sha" ]]; then
+      problems+="; HEAD not back at pre-run commit (HEAD=${now_sha:0:12}, expected ${start_sha:0:12})"
+    fi
   fi
 
   if [[ -n "$problems" ]]; then
@@ -236,6 +265,11 @@ cmd_execute() {
         PAIR_PGID="" PAIR_STALL="" PAIR_STALL_BUSY="" PAIR_LAUNCH=()
   (( pair )) && pair_begin execute "$repo" "$new_branch" "$child_log" "$prior"
 
+  # Capture the working branch's HEAD BEFORE the child launches. In
+  # existing-branch mode the child commits onto this same branch, so a restart
+  # must rewind it to here to drop this run's commits (execute_restart_revert).
+  local start_sha; start_sha="$(git -C "$repo" rev-parse HEAD 2>/dev/null || true)"
+
   local stall_n=0
   while :; do
     local run_opts=("${opts[@]}")
@@ -301,7 +335,7 @@ cmd_execute() {
   if (( pair )) && pair_restarted "$child_log"; then
     local diag; diag="$(pair_restart_read "$child_log")"
     local revert_problems revert_rc
-    revert_problems="$(execute_restart_revert "$repo" "$base_branch" "$new_branch")"
+    revert_problems="$(execute_restart_revert "$repo" "$base_branch" "$new_branch" "$start_sha")"
     revert_rc=$?
     child_store_done "$ckey"
     pair_cleanup "$pair"

@@ -1719,6 +1719,58 @@ if [[ -x "$PAIR_STUB_DIR/claude" ]]; then
   git -C "$REPO" clean -fdq 2>/dev/null || true
   git -C "$REPO" branch -D "$STRAYED_BR" >/dev/null 2>&1 || true
 
+  # --- 134f. execute --pair restart rewinds commits made on the SAME branch ---
+  # 134e covers a SEPARATE strayed branch (deleting it undoes the work). In
+  # existing-branch mode (--base == --branch) the child commits onto the base
+  # branch itself, so there is no separate branch to delete -- a no-op reset to
+  # HEAD would leave this run's commits in place. The restart must rewind the
+  # branch to the commit it was on BEFORE the run. This case commits a tracked
+  # change directly onto the existing branch (plus uncommitted + untracked
+  # junk), then asserts HEAD is back at the captured pre-run commit, clean.
+  same_pre_sha="$(git -C "$REPO" rev-parse HEAD 2>/dev/null)"
+  restart_same_drive() {
+    local f="" clog i
+    for i in $(seq 1 400); do
+      f="$(ls "$PDIR"/children/*.steer.fifo 2>/dev/null | head -1)"
+      if [[ -n "$f" ]]; then
+        clog="${f%.steer.fifo}.jsonl"
+        grep -q '"type":"result"' "$clog" 2>/dev/null && break
+      fi
+      sleep 0.05
+    done
+    [[ -n "$f" ]] || return 0
+    # Strayed footprint ON the existing branch: a commit plus uncommitted and
+    # untracked junk -- and NO separate branch is ever created.
+    printf 'same-branch committed change\n' >> "$REPO/a.txt"
+    git -C "$REPO" add a.txt
+    git -C "$REPO" commit -q -m "strayed same-branch work"
+    printf 'same-branch uncommitted edit\n' >> "$REPO/a.txt"
+    printf 'same-branch junk\n' > "$REPO/same-untracked.txt"
+    "$CEREBRO_BIN" restart "$f" "same-branch mess to revert" >/dev/null 2>&1
+  }
+
+  : > "$PAIR_ARGV_LOG"
+  restart_same_drive &
+  SAME_PID=$!
+  env PATH="$PAIR_STUB_PATH" CEREBRO_SESSION_ID="$PSESS" CEREBRO_PAIR_IDLE=10 \
+    "$CEREBRO_BIN" execute "$REPO" --prompt "do the work then stray on-branch" \
+    --base main --branch main --pair >/dev/null 2>&1
+  wait "$SAME_PID" 2>/dev/null
+  same_head="$(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  same_sha="$(git -C "$REPO" rev-parse HEAD 2>/dev/null)"
+  same_dirty="$(git -C "$REPO" status --porcelain 2>/dev/null)"
+  if [[ "$same_head" == "main" && "$same_sha" == "$same_pre_sha" && -z "$same_dirty" ]]; then
+    printf 'PASS  134f  execute --pair restart rewinds same-branch commits to pre-run\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  134f  restart left same-branch commits [head=%s sha=%s pre=%s dirty=%s]\n' \
+      "$same_head" "$same_sha" "$same_pre_sha" "$same_dirty"; fail=$((fail + 1))
+    failures+=("134f same-branch revert :: head=$same_head sha=$same_sha pre=$same_pre_sha")
+  fi
+  # Safety net: restore REPO for the remaining tests even if the assertion failed.
+  git -C "$REPO" checkout -q main 2>/dev/null || true
+  git -C "$REPO" reset -q --hard "$same_pre_sha" 2>/dev/null || true
+  git -C "$REPO" clean -fdq 2>/dev/null || true
+
   # --- 135. WITHOUT --pair, no stream-json input / session pinning / banner ---
   : > "$PAIR_ARGV_LOG"
   env PATH="$PAIR_STUB_PATH" CEREBRO_SESSION_ID="$PSESS" \
