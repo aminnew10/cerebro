@@ -101,7 +101,7 @@ $context
   fi
   child_store_begin "$ckey" codex audit "$repo" "$out_name" "$out_path" "${prior:+preserve-id}"
   env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
-    "${TIMEOUT_CMD[@]}" "$CEREBRO_CODEX_CMD" "${run_args[@]}" 2> "$err_path" \
+    "${TIMEOUT_CMD[@]}" "$CEREBRO_CODEX_CMD" "${run_args[@]}" < /dev/null 2> "$err_path" \
     | python3 "$CEREBRO_LIB_DIR/python/codex_capture.py" "$json_path" "$store_file" "$ckey"
   rc=${PIPESTATUS[0]}
 
@@ -116,7 +116,7 @@ $context
     : > "$json_path"
     child_store_begin "$ckey" codex audit "$repo" "$out_name" "$out_path"
     env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
-      "${TIMEOUT_CMD[@]}" "$CEREBRO_CODEX_CMD" "${codex_opts[@]}" "$audit_prompt" 2> "$err_path" \
+      "${TIMEOUT_CMD[@]}" "$CEREBRO_CODEX_CMD" "${codex_opts[@]}" "$audit_prompt" < /dev/null 2> "$err_path" \
       | python3 "$CEREBRO_LIB_DIR/python/codex_capture.py" "$json_path" "$store_file" "$ckey"
     rc=${PIPESTATUS[0]}
   fi

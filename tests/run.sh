@@ -1572,6 +1572,75 @@ if [[ -x "$CODEX_STUB_DIR/codex" ]]; then
     printf 'FAIL  128d re-audit passed resume <thread_id> [argv=%s]\n' "$(cat "$CODEX_ARGV_LOG")"; fail=$((fail + 1))
     failures+=("128d audit resume argv present")
   fi
+
+  # --- 128e/128f. codex children must launch with stdin from /dev/null so a
+  # never-closing parent stdin (the backgrounded/detached case) cannot wedge
+  # them on codex's "Reading additional input from stdin..." path. We feed
+  # cerebro a FIFO whose writer never sends EOF and use a stdin-CONSUMING codex
+  # stub (mimicking real codex, which appends stdin to its prompt). With the fix
+  # the stub sees /dev/null -> immediate EOF -> completes; without it the stub
+  # blocks on the FIFO and the run is killed by the deadline (rc != 0). ---
+  if command -v timeout >/dev/null 2>&1; then TO_CMD=(timeout 10)
+  elif command -v gtimeout >/dev/null 2>&1; then TO_CMD=(gtimeout 10)
+  elif command -v perl >/dev/null 2>&1; then TO_CMD=(perl -e 'alarm shift; exec @ARGV' 10)
+  else TO_CMD=(); fi
+  if (( ${#TO_CMD[@]} )); then
+    SIN_STUB_DIR="$WORKDIR/codex-stdin-stub"
+    mkdir -p "$SIN_STUB_DIR"
+    cat > "$SIN_STUB_DIR/codex" <<EOF
+#!/usr/bin/env bash
+# Emulate real codex reading stdin -- a never-closing stdin would block here.
+cat >/dev/null
+out=""; prev=""
+for a in "\$@"; do
+  [[ "\$prev" == "-o" ]] && out="\$a"
+  prev="\$a"
+done
+printf '%s\n' '{"type":"thread.started","thread_id":"$CX_TID"}'
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"no issues found"}}'
+[[ -n "\$out" ]] && printf 'no issues found\n' > "\$out"
+exit 0
+EOF
+    chmod +x "$SIN_STUB_DIR/codex"
+    SIN_STUB_PATH="$SIN_STUB_DIR:$PATH"
+
+    # audit: cerebro's stdin is a FIFO whose writer never sends EOF.
+    AUD_FIFO="$WORKDIR/codex-audit-stdin.fifo"
+    rm -f "$AUD_FIFO"; mkfifo "$AUD_FIFO"
+    sleep 30 > "$AUD_FIFO" &
+    aud_hold=$!
+    aud_rc=0
+    aud_sout="$(env PATH="$SIN_STUB_PATH" CEREBRO_SESSION_ID="$RSESS" CEREBRO_CODEX_CMD=codex \
+      "${TO_CMD[@]}" "$CEREBRO_BIN" audit "$REPO" "$audit_plan" < "$AUD_FIFO" 2>/dev/null)" || aud_rc=$?
+    kill "$aud_hold" 2>/dev/null; wait "$aud_hold" 2>/dev/null
+    rm -f "$AUD_FIFO"
+    if [[ $aud_rc -eq 0 && -n "$aud_sout" ]]; then
+      printf 'PASS  128e  audit codex child reads /dev/null, never blocks on parent stdin\n'; pass=$((pass + 1))
+    else
+      printf 'FAIL  128e  audit blocked on inherited stdin [rc=%d out=%s]\n' "$aud_rc" "$aud_sout"; fail=$((fail + 1))
+      failures+=("128e audit stdin blocked :: rc=$aud_rc")
+    fi
+
+    # review: same never-closing-stdin FIFO trick.
+    REV_FIFO="$WORKDIR/codex-review-stdin.fifo"
+    rm -f "$REV_FIFO"; mkfifo "$REV_FIFO"
+    sleep 30 > "$REV_FIFO" &
+    rev_hold=$!
+    rev_rc=0
+    env PATH="$SIN_STUB_PATH" CEREBRO_SESSION_ID="$RSESS" CEREBRO_CODEX_CMD=codex \
+      "${TO_CMD[@]}" "$CEREBRO_BIN" review "$REPO" < "$REV_FIFO" >/dev/null 2>&1 || rev_rc=$?
+    kill "$rev_hold" 2>/dev/null; wait "$rev_hold" 2>/dev/null
+    rm -f "$REV_FIFO"
+    if [[ $rev_rc -eq 0 ]]; then
+      printf 'PASS  128f  review codex child reads /dev/null, never blocks on parent stdin\n'; pass=$((pass + 1))
+    else
+      printf 'FAIL  128f  review blocked on inherited stdin [rc=%d]\n' "$rev_rc"; fail=$((fail + 1))
+      failures+=("128f review stdin blocked :: rc=$rev_rc")
+    fi
+  else
+    printf 'SKIP  128e  audit stdin-devnull (no deadline command available)\n'
+    printf 'SKIP  128f  review stdin-devnull (no deadline command available)\n'
+  fi
 else
   printf 'SKIP  127  review codex-session capture (codex stub unavailable)\n'
   printf 'SKIP  127b review codex --json (codex stub unavailable)\n'
@@ -1581,6 +1650,8 @@ else
   printf 'SKIP  128b review fresh argv (codex stub unavailable)\n'
   printf 'SKIP  128c audit codex run (codex stub unavailable)\n'
   printf 'SKIP  128d audit completed no-auto-resume (codex stub unavailable)\n'
+  printf 'SKIP  128e audit stdin-devnull (codex stub unavailable)\n'
+  printf 'SKIP  128f review stdin-devnull (codex stub unavailable)\n'
 fi
 
 # ========================================================================
