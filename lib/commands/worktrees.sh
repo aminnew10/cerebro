@@ -7,9 +7,10 @@
 # command. `cerebro worktrees` (or `... list`) reports every worktree with its
 # branch, owning repo, and in-use verdict; `cerebro worktrees cleanup` removes
 # the ones that are safe to delete. A worktree is KEPT when it is still in use
-# by any of: an OPEN PR for its branch, an in-flight/resumable cerebro child, or
-# local commits not yet pushed/merged. When any check is unknown it is KEPT
-# (safe default), so cleanup never drops work it could not positively clear.
+# by any of: uncommitted/untracked changes in the tree, an OPEN PR for its
+# branch, an in-flight/resumable cerebro child, or local commits not yet
+# pushed/merged. When any check is unknown it is KEPT (safe default), so cleanup
+# never drops work it could not positively clear.
 
 # worktree_owner <wt> -- the owning repo (the main working tree of the worktree
 # set), or empty when <wt> is not a live worktree.
@@ -41,18 +42,32 @@ worktree_in_use() {
   local wt="$1" branch="$2"
   WT_USE_REASON=""
 
-  # 1. An OPEN PR for the branch. A missing/closed PR (gh non-zero or a
-  # non-OPEN state) is NOT a keep -- only a positively OPEN PR holds it.
+  # 1. Uncommitted or untracked work in the tree. A non-empty `status
+  # --porcelain` means there are local changes that were never committed (let
+  # alone pushed); removing the worktree would destroy them outright, so keep
+  # it. An unreadable status (git failed) is unknown -> keep.
+  local dirty dirty_rc
+  dirty="$(git -C "$wt" status --porcelain 2>/dev/null)"; dirty_rc=$?
+  if (( dirty_rc != 0 )); then WT_USE_REASON="dirty-tree state unknown"; return 0; fi
+  if [[ -n "$dirty" ]]; then WT_USE_REASON="uncommitted or untracked changes"; return 0; fi
+
+  # 2. An OPEN PR for the branch. We must tell "no open PR" apart from "lookup
+  # failed": a transient gh auth/network/CLI failure must NOT read as no-PR, or
+  # cleanup could delete a worktree for a live pushed PR. `gh pr list` exits 0
+  # with an empty array when there is genuinely no open PR; a non-zero exit is a
+  # lookup failure -> unknown -> keep.
   if [[ -n "$branch" && "$branch" != "HEAD" ]]; then
-    local state
-    state="$(cd "$wt" 2>/dev/null && gh pr view "$branch" --json state -q .state 2>/dev/null)"
-    if [[ "$state" == "OPEN" ]]; then WT_USE_REASON="open PR for $branch"; return 0; fi
+    local prlist pr_rc
+    prlist="$(cd "$wt" 2>/dev/null && gh pr list --head "$branch" --state open --json state -q '.[].state' 2>/dev/null)"
+    pr_rc=$?
+    if (( pr_rc != 0 )); then WT_USE_REASON="PR lookup failed for $branch"; return 0; fi
+    if [[ "$prlist" == *OPEN* ]]; then WT_USE_REASON="open PR for $branch"; return 0; fi
   fi
 
-  # 2. An in-flight or resumable cerebro child on this worktree.
+  # 3. An in-flight or resumable cerebro child on this worktree.
   if worktree_has_live_child "$wt"; then WT_USE_REASON="in-flight cerebro child"; return 0; fi
 
-  # 3. Local commits not yet pushed/merged. With an upstream, anything in
+  # 4. Local commits not yet pushed/merged. With an upstream, anything in
   # @{upstream}..HEAD is unpushed; with none, anything ahead of the base ref is.
   # An unreadable count is unknown -> keep.
   local cnt

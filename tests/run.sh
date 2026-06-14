@@ -984,6 +984,14 @@ STDERR_CONTAINS="requires <plan-path> or --prompt" \
 run_case 112 "execute --base/--branch needs plan or prompt" 1 -- \
   "$CEREBRO_BIN" execute "$REPO" --base feat/step-1 --branch feat/step-2
 
+# --- 112b. execute: identical --base and --branch is the removed existing-branch
+# invocation -- it must error (the child only ever cuts a FRESH branch, so
+# create-X-from-origin/X-and-PR-back-to-X is impossible), not silently enter
+# stacked mode. Fires before any child claude spawns. ---
+STDERR_CONTAINS="--base and --branch must differ" \
+run_case 112b "execute identical base/branch errors" 1 -- \
+  "$CEREBRO_BIN" execute "$REPO" --prompt "follow-up" --base feat/step-1 --branch feat/step-1
+
 # --- 113. review: --criteria-file missing path fails fast (before codex) ---
 STDERR_CONTAINS="cannot read --criteria-file" \
 run_case 113 "review --criteria-file missing path" 1 -- \
@@ -1187,7 +1195,7 @@ EOF
   fi
 
   # --- 126c. distinct --base/--branch drives STACKED-BRANCH MODE; the deleted
-  # existing-branch mode wording never appears (even when base == branch). ---
+  # existing-branch mode wording never appears. ---
   PROMPT_STUB_DIR="$WORKDIR/claude-prompt-stub"
   mkdir -p "$PROMPT_STUB_DIR"
   cat > "$PROMPT_STUB_DIR/claude" <<'EOF'
@@ -1375,45 +1383,61 @@ EOF
   fi
 
   # --- 147. `cerebro worktrees cleanup` removes a stale worktree (its branch has
-  # no open PR and no unpushed commits) but keeps one with unpushed commits and
-  # one whose branch has a (simulated) open PR. ---
+  # no open PR and no unpushed commits) but keeps one with unpushed commits, one
+  # whose branch has a (simulated) open PR, and one with uncommitted/untracked
+  # work in its tree. A failed PR lookup (gh non-zero) must also KEEP, never read
+  # as no-PR. ---
   WT_GC_STALE="$CEREBRO_HOME/worktrees/gc-stale"
   WT_GC_AHEAD="$CEREBRO_HOME/worktrees/gc-ahead"
   WT_GC_PR="$CEREBRO_HOME/worktrees/gc-pr"
-  git -C "$REPO" worktree add -q -b feat/gc-stale "$WT_GC_STALE" main >/dev/null 2>&1
-  git -C "$REPO" worktree add -q -b feat/gc-ahead "$WT_GC_AHEAD" main >/dev/null 2>&1
-  git -C "$REPO" worktree add -q -b feat/gc-pr    "$WT_GC_PR"    main >/dev/null 2>&1
+  WT_GC_DIRTY="$CEREBRO_HOME/worktrees/gc-dirty"
+  WT_GC_PRFAIL="$CEREBRO_HOME/worktrees/gc-prfail"
+  git -C "$REPO" worktree add -q -b feat/gc-stale  "$WT_GC_STALE"  main >/dev/null 2>&1
+  git -C "$REPO" worktree add -q -b feat/gc-ahead  "$WT_GC_AHEAD"  main >/dev/null 2>&1
+  git -C "$REPO" worktree add -q -b feat/gc-pr     "$WT_GC_PR"     main >/dev/null 2>&1
+  git -C "$REPO" worktree add -q -b feat/gc-dirty  "$WT_GC_DIRTY"  main >/dev/null 2>&1
+  git -C "$REPO" worktree add -q -b feat/gc-prfail "$WT_GC_PRFAIL" main >/dev/null 2>&1
   # gc-ahead carries a commit ahead of the base ref (unpushed) -> must be kept.
   printf 'ahead\n' >> "$WT_GC_AHEAD/a.txt"
   git -C "$WT_GC_AHEAD" add a.txt >/dev/null 2>&1
   git -C "$WT_GC_AHEAD" commit -q -m "unpushed work" >/dev/null 2>&1
-  # gh stub: report an OPEN PR only for feat/gc-pr; no PR (exit 1) otherwise.
+  # gc-dirty has only UNCOMMITTED + UNTRACKED work (no commit ahead) -> must be
+  # kept by the dirty-tree check, or that work would be destroyed.
+  printf 'uncommitted\n' >> "$WT_GC_DIRTY/a.txt"
+  printf 'untracked\n' > "$WT_GC_DIRTY/scratch.txt"
+  # gh stub: OPEN PR for feat/gc-pr; a forced lookup FAILURE (exit 2) for
+  # feat/gc-prfail (transient auth/network) which must KEEP; clean empty (exit 0)
+  # for the rest, the only genuine "no open PR".
   GC_GH_DIR="$WORKDIR/gc-gh-stub"; mkdir -p "$GC_GH_DIR"
   cat > "$GC_GH_DIR/gh" <<'EOF'
 #!/usr/bin/env bash
 br=""; prev=""
-for a in "$@"; do [[ "$prev" == "view" ]] && br="$a"; prev="$a"; done
-[[ "$br" == "feat/gc-pr" ]] && { echo OPEN; exit 0; }
-exit 1
+for a in "$@"; do [[ "$prev" == "--head" ]] && br="$a"; prev="$a"; done
+[[ "$br" == "feat/gc-pr" ]]     && { echo OPEN; exit 0; }
+[[ "$br" == "feat/gc-prfail" ]] && exit 2   # lookup failure -> unknown -> keep
+exit 0                                        # successful empty -> no open PR
 EOF
   chmod +x "$GC_GH_DIR/gh"
   env PATH="$GC_GH_DIR:$PATH" CEREBRO_SESSION_ID="$WTSESS" \
     "$CEREBRO_BIN" worktrees cleanup >/dev/null 2>&1
-  if [[ ! -d "$WT_GC_STALE" && -d "$WT_GC_AHEAD" && -d "$WT_GC_PR" ]]; then
-    printf 'PASS  147  worktrees cleanup removes stale, keeps unpushed + open-PR worktrees\n'; pass=$((pass + 1))
+  if [[ ! -d "$WT_GC_STALE" && -d "$WT_GC_AHEAD" && -d "$WT_GC_PR" \
+        && -d "$WT_GC_DIRTY" && -d "$WT_GC_PRFAIL" ]]; then
+    printf 'PASS  147  cleanup removes stale, keeps unpushed/open-PR/dirty/PR-lookup-failed\n'; pass=$((pass + 1))
   else
-    printf 'FAIL  147  cleanup verdicts wrong [stale=%d ahead=%d pr=%d]\n' \
+    printf 'FAIL  147  cleanup verdicts wrong [stale=%d ahead=%d pr=%d dirty=%d prfail=%d]\n' \
       "$([[ -d "$WT_GC_STALE" ]] && echo 1 || echo 0)" \
       "$([[ -d "$WT_GC_AHEAD" ]] && echo 1 || echo 0)" \
-      "$([[ -d "$WT_GC_PR" ]] && echo 1 || echo 0)"; fail=$((fail + 1))
+      "$([[ -d "$WT_GC_PR" ]] && echo 1 || echo 0)" \
+      "$([[ -d "$WT_GC_DIRTY" ]] && echo 1 || echo 0)" \
+      "$([[ -d "$WT_GC_PRFAIL" ]] && echo 1 || echo 0)"; fail=$((fail + 1))
     failures+=("147 worktrees cleanup verdicts")
   fi
   # Tidy the kept test worktrees so they don't perturb later worktree scans.
-  for w in "$WT_FU" "$WT_GC_AHEAD" "$WT_GC_PR"; do
+  for w in "$WT_FU" "$WT_GC_AHEAD" "$WT_GC_PR" "$WT_GC_DIRTY" "$WT_GC_PRFAIL"; do
     git -C "$REPO" worktree remove --force "$w" >/dev/null 2>&1 || true
   done
   git -C "$REPO" worktree prune >/dev/null 2>&1 || true
-  for b in feat/fu-reuse feat/gc-stale feat/gc-ahead feat/gc-pr; do
+  for b in feat/fu-reuse feat/gc-stale feat/gc-ahead feat/gc-pr feat/gc-dirty feat/gc-prfail; do
     git -C "$REPO" branch -D "$b" >/dev/null 2>&1 || true
   done
 else

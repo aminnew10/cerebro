@@ -40,6 +40,12 @@ cmd_execute() {
   if [[ -n "$plan_path" ]]; then
     [[ -r "$plan_path" ]] || die "execute: cannot read plan: $plan_path"
   fi
+  # Identical --base and --branch is the old existing-branch invocation, which
+  # is gone. The child always cuts a FRESH branch in its worktree, so asking it
+  # to create branch X from origin/X and open a PR back to X is impossible.
+  if [[ -n "$base_branch" && "$base_branch" == "$new_branch" ]]; then
+    die "execute: --base and --branch must differ ('$base_branch'); existing-branch mode was removed -- to do follow-up work on a branch, target that task's worktree path (passed back by its execute) or use 'cerebro apply-review'"
+  fi
 
   local plan_body source_desc
   if [[ -n "$plan_path" ]]; then
