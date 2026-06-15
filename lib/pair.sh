@@ -94,10 +94,13 @@ pair_begin() {
 # completion. Feeds the initial prompt to pair_pump (which POSTs it to the
 # served session and streams the session's events back in run-format), tees
 # those events to the child log, and pipes them through parse_stream.py (session
-# id + closing message capture). Returns parse_stream's exit code. The server
-# was already rooted at <cwd> by pair_begin, so the cwd arg is informational
-# here. <model> defaults to CEREBRO_MODEL. The pump's stderr (rejected-prompt
-# diagnostics) is captured to a .pump.log sidecar beside the child log.
+# id + closing message capture). Returns the pump's exit code when it failed
+# (e.g. the served session rejected the initial prompt, so no events follow),
+# otherwise parse_stream's exit code -- NOT tee's, which would mask both. The
+# server was already rooted at <cwd> by pair_begin, so the cwd arg is
+# informational here. <model> defaults to CEREBRO_MODEL. The pump's stderr
+# (rejected-prompt diagnostics) is captured to a .pump.log sidecar beside the
+# child log.
 pair_run() {
   local cwd="$1" prompt="$2" agent="$3" resume="$4" child_log="$5" \
         msg_capture="$6" id_capture="$7" store_file="$8" ckey="$9" \
@@ -115,7 +118,15 @@ pair_run() {
     | tee "$child_log" \
     | python3 "$CEREBRO_LIB_DIR/python/parse_stream.py" \
         "$msg_capture" "$id_capture" "$store_file" "$ckey"
-  return "${PIPESTATUS[2]}"
+  # Pipeline is printf|pair_pump.py|tee|parse_stream.py (PIPESTATUS 0..3).
+  # tee (index 2) almost always succeeds, so returning it would swallow a real
+  # failure -- in particular pair_pump.py now exits non-zero when the served
+  # session rejects the initial prompt and emits no events. Propagate the pump's
+  # status when it failed; otherwise return parse_stream's. Snapshot PIPESTATUS
+  # first: it is clobbered by the very next command.
+  local pipe=( "${PIPESTATUS[@]}" )
+  (( pipe[1] != 0 )) && return "${pipe[1]}"
+  return "${pipe[3]}"
 }
 
 # pair_cleanup <pair> -- stop the private server and remove the steering pipe

@@ -1633,6 +1633,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 PORT = int(os.environ.get("FAKE_PORT", "0"))
 SID = os.environ.get("FAKE_SID", "PAIRSESS-1")
 STALL_STATE = os.environ.get("FAKE_STALL_STATE", "")
+# When set, the first POST .../prompt_async is answered with a non-2xx status
+# (and no events ever follow), modelling opencode serve rejecting the initial
+# prompt (e.g. a model-shape mismatch). Exercises the pump's abort-on-reject
+# path so we can assert pair_run/execute surface a failure rather than exit 0.
+REJECT_PROMPT = bool(os.environ.get("FAKE_REJECT_PROMPT", ""))
 
 turns = queue.Queue()
 stall = False
@@ -1696,6 +1701,11 @@ class H(BaseHTTPRequestHandler):
             self._send(204)
             return
         if "/prompt_async" in self.path:
+            if REJECT_PROMPT:
+                # Reject the prompt and emit nothing: the pump must abort and
+                # exit non-zero, surfacing the failure to pair_run/execute.
+                self._send(400, b'{"error":"bad model shape"}')
+                return
             turns.put(1)
             self._send(204)
             return
@@ -2101,8 +2111,36 @@ EOF
       "$rstrc" "$rstout" "$(cat "$WORKDIR/rsterr")"; fail=$((fail + 1))
     failures+=("139 pair stall restart :: rc=$rstrc")
   fi
+
+  # --- 139b. a REJECTED initial prompt (serve answers /prompt_async non-2xx and
+  # emits no events) must surface as a FAILURE, not exit 0. The pump aborts with
+  # a non-zero exit; pair_run must propagate that (it sits at PIPESTATUS[1], the
+  # pump -- not [2], tee, which would mask it). Regression for pair_run returning
+  # tee's status: execute must die (rc != 0) and log execute_failed, and the
+  # rejected-prompt diagnostic must land in the .pump.log sidecar. ---
+  RJSESS="pair-reject-session"; RJDIR="$CEREBRO_HOME/sessions/$RJSESS"
+  mkdir -p "$RJDIR/children" "$RJDIR/plans"; : > "$RJDIR/transcript.jsonl"
+  rjout="$(env PATH="$PAIR_STUB_PATH" CEREBRO_SESSION_ID="$RJSESS" \
+    FAKE_REJECT_PROMPT=1 CEREBRO_PAIR_IDLE=1 \
+    "$CEREBRO_BIN" execute "$REPO" --prompt "prompt that gets rejected" --pair \
+    >"$WORKDIR/rjout" 2>"$WORKDIR/rjerr")"
+  rjrc=$?
+  rjerr="$(cat "$WORKDIR/rjerr")"
+  # The child log path is the worktree's child log; find the matching .pump.log.
+  rjpump="$(ls "$RJDIR"/children/*.pump.log 2>/dev/null | head -1)"
+  rjpumptxt="$(cat "$rjpump" 2>/dev/null || true)"
+  if [[ $rjrc -ne 0 ]] \
+     && grep -q '"what":"execute_failed"' "$RJDIR/transcript.jsonl" \
+     && ! grep -q '"what":"execute_finished"' "$RJDIR/transcript.jsonl" \
+     && [[ "$rjpumptxt" == *"not accepted by opencode serve"* ]]; then
+    printf 'PASS  139b  rejected initial prompt surfaces a failure (not exit 0)\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  139b  rejected prompt did not surface failure [rc=%d err=%s pump=%s]\n' \
+      "$rjrc" "$rjerr" "$rjpumptxt"; fail=$((fail + 1))
+    failures+=("139b rejected prompt :: rc=$rjrc")
+  fi
 else
-  for t in 131 132 133 133b 134 134c 134d 134e 135 136 137 138 138b 138c 138d 138e 139; do
+  for t in 131 132 133 133b 134 134c 134d 134e 135 136 137 138 138b 138c 138d 138e 139 139b; do
     printf 'SKIP  %s  pair-mode (opencode stub unavailable)\n' "$t"
   done
 fi
