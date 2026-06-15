@@ -1,10 +1,9 @@
-# Shared child-session store library, imported by child_store.py,
-# codex_capture.py, and parse_stream.py -- so the id a child emits at
-# startup is persisted the INSTANT it is known (not at the end of the run)
-# and an interrupt therefore leaves a resumable pointer. All writes take an
-# exclusive flock on a sidecar .lock file and rewrite the JSON atomically,
-# so concurrent --pair children persisting their own ids never clobber each
-# other.
+# Shared child-session store library, imported by child_store.py and
+# parse_stream.py -- so the id a child emits at startup is persisted the
+# INSTANT it is known (not at the end of the run) and an interrupt therefore
+# leaves a resumable pointer. All writes take an exclusive flock on a sidecar
+# .lock file and rewrite the JSON atomically, so concurrent --pair children
+# persisting their own ids never clobber each other.
 
 import json, sys, os, time, calendar, tempfile
 try:

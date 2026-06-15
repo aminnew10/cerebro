@@ -10,7 +10,7 @@ see [ARCHITECTURE.md](ARCHITECTURE.md).
 ```bash
 cerebro                       # mint a new session, drop into the chat
 cerebro --resume <id>         # resume a specific session
-cerebro --resume              # claude's session picker
+cerebro --resume              # resume the most recently touched session
 cerebro --observe [<id>]      # watch-and-steer-only session for another
                               #   session's live paired children
 cerebro list                  # list sessions, newest first
@@ -47,23 +47,23 @@ Describe the change and the repo. The orchestrator:
    orchestrator then uses as the repo argument for that task's review /
    apply-review / doc-write. Worktrees persist between runs; stale ones
    are reclaimed with `cerebro worktrees cleanup`.
-5. Runs codex review against the diff, summarises the findings,
+5. Runs an independent (GPT-5.5) review against the diff, summarises the findings,
    applies the in-scope important ones, and loops review →
-   apply-review until codex is quiet. Re-reviews are incremental: only
+   apply-review until the reviewer is quiet. Re-reviews are incremental: only
    the changes since the last review are inspected, so the loop stays
    cheap. Out-of-scope or gold-plating findings are named to you, not
    silently applied.
 6. **Verifies the change end to end by actually using the running
-   app** — Playwright-driven where possible, or manual testing with
-   you when it can't be automated. Static review and unit tests never
+   app** — browser-driven/automated where possible, or manual testing
+   with you when it can't be automated. Static review and unit tests never
    count as "done" on their own.
 7. Optionally updates docs on the same branch (`doc-write`).
 
-First time it touches a repo with no `AGENTS.md`/`CLAUDE.md`, it adds
-them from the user-editable templates at `~/.cerebro/templates/` as a
+First time it touches a repo with no `AGENTS.md`, it adds
+it from the user-editable template at `~/.cerebro/templates/AGENTS.md` as a
 separate first commit (defaults: Conventional Commits, ≤ 80-char
 subjects, `feat/`-style branches, no commits and no DB/infra changes
-without an explicit ask). It never overwrites existing files.
+without an explicit ask). It never overwrites an existing file.
 
 ## Ship a large change (stacked PRs)
 
@@ -77,7 +77,7 @@ spec can't be split that way, it says so and proposes a different cut
 instead of emitting breaking plans.
 
 You approve the decomposition once; it then executes the suite
-autonomously. Each step is gated by a **checkpoint**: a codex review
+autonomously. Each step is gated by a **checkpoint**: an independent review
 fed the plan's acceptance criteria (verdict line `ACCEPTANCE CRITERIA:
 MET` / `NOT MET`), zero important in-scope findings, *and* an
 end-to-end check of that step's user flow against the running app. On
@@ -99,7 +99,7 @@ you already answered in a prior session.
 ## Pair: watch and steer a live agent
 
 Ask to *pair* (or *watch*, *steer*, *let me drive*) and the child runs
-in pair mode (`plan`, `execute`, `apply-review`, `doc-write`; codex
+in pair mode (`plan`, `execute`, `apply-review`, `doc-write`; the read-only reviewer
 review has no live-steer):
 
 * **Observe** — from a *second* cerebro session, say "observe
@@ -132,9 +132,9 @@ revising affected plans — then tells you what changed.
 
 ## Resume and interrupted work
 
-Sessions are durable. `cerebro --resume <id>` (or the picker) drops
-you back into the same conversation, with the session spec, plans,
-review state, and transcripts intact on disk.
+Sessions are durable. `cerebro --resume <id>` (or bare `cerebro --resume`
+for the most recent session) drops you back into the same conversation,
+with the session spec, plans, review state, and transcripts intact on disk.
 
 Interrupting mid-run loses nothing: every child's resumable
 conversation id is persisted the instant it starts. On "continue" the
@@ -190,9 +190,9 @@ about them:
 * **Plan-first by default.** Skipping the plan or the review requires
   you to ask for it explicitly.
 * **The orchestrator cannot mutate anything.** Its tools are
-  restricted to read/search/web plus `cerebro:*`; the restriction is
-  enforced by the harness, not by promise. Mutations happen only in
-  role-scoped children; the reviewer is sandboxed read-only.
+  restricted to read/search/web plus `cerebro` commands; the restriction
+  is enforced by the agent permission harness, not by promise. Mutations
+  happen only in role-scoped children; the reviewer is sandboxed read-only.
 * **Done means observed working.** End-to-end verification in the
   running app is a non-negotiable part of the definition of done.
 
@@ -207,14 +207,14 @@ Re-running it updates the clone in place. To pin a ref, set
 Prefer to manage it yourself:
 
 ```bash
-git clone https://github.com/aminmarashi/cerebro.git ~/.local/share/cerebro
+git clone https://github.com/aminnew10/cerebro.git ~/.local/share/cerebro
 ln -s ~/.local/share/cerebro/bin/cerebro ~/bin/cerebro   # ~/bin must be on PATH
 ```
 
 To uninstall without a working `cerebro-uninstall` symlink:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/aminmarashi/cerebro/main/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/aminnew10/cerebro/main/uninstall.sh | bash
 ```
 
 ## Configuration
@@ -224,12 +224,12 @@ Env vars (all optional):
 | var | meaning | default |
 |-----|---------|---------|
 | `CEREBRO_HOME` | base dir for all state | `~/.cerebro` |
-| `CEREBRO_MODEL` | model alias for child `claude -p` | provider default |
-| `CEREBRO_REVIEW_MODEL` | model alias for `codex exec` | provider default |
+| `CEREBRO_OPENCODE_CMD` | opencode executable | `opencode` |
+| `CEREBRO_MODEL` | `provider/model` for the orchestrator + editing children | `github-copilot/claude-opus-4.8` |
+| `CEREBRO_REVIEW_MODEL` | `provider/model` for the read-only reviewer/auditor | `github-copilot/gpt-5.5` |
 | `CEREBRO_TIMEOUT` | wall-clock cap (s) per child call | `0` (no cap, so e2e runs and CI waits are never killed) |
 | `CEREBRO_CHILD_SESSION_TTL` | how long (s) a stored child id stays resumable | `86400` (24h) |
 | `CEREBRO_PAIR_IDLE` | steering window (s) after each paired turn | `60` |
-| `CEREBRO_CODEX_CMD` | codex executable | `codex` |
 | `CEREBRO_DEBUG` | `1` for verbose logs | `0` |
 
 Two deliberate limits to know about:
@@ -250,17 +250,18 @@ open in your editor:
 ```
 ~/.cerebro/
   learnings.md                       # confirmed preferences (injected into the prompt)
-  templates/AGENTS.md, CLAUDE.md     # defaults dropped into new repos (edit freely)
+  templates/AGENTS.md                # default dropped into new repos (edit freely)
   worktrees/<ckey>/                  # isolated per-task execute worktrees
                                      #   (GC stale ones with `cerebro worktrees cleanup`)
   sessions/<id>/
     spec.md                          # current session spec (requirements of record)
     spec-history.jsonl               # every prior spec version
     plans/                           # plan markdown files
-    children/                        # stream-json logs of every sub-agent + codex findings
+    children/                        # opencode event logs of every sub-agent + review findings
     review-state/                    # per-repo last-reviewed SHA
 ```
 
-The full layout, the hook that routes prompts to the right session,
+The full layout, the session-binding plugin that records opencode's
+session id and mirrors prompts to the right session,
 and the reasoning behind file-based state are covered in
 [ARCHITECTURE.md](ARCHITECTURE.md#3-everything-durable-is-a-plain-file).

@@ -4,29 +4,32 @@
 
 ![cerebro demo](docs/demo.gif)
 
-`cerebro` drops you into a `claude` chat configured as an
+`cerebro` drops you into an `opencode` chat configured as an
 orchestrator. It can read, search, and browse — but never touch your
 repos directly: every edit, git operation, PR, and code review happens
-in a short-lived sub-agent it spawns (`claude -p` for code, `codex
-exec` for review and plan audits). The orchestrator writes plans itself
-with its full conversation context, then has codex audit them against
-the actual code with fresh, independent eyes. You describe what you
-want and stay in the chat.
+in a short-lived sub-agent it spawns. The implementer runs on Claude
+Opus; the reviewer/auditor runs on a deliberately DIFFERENT model
+(GPT-5.5), so reviews are a genuinely independent pair of eyes. The
+orchestrator writes plans itself with its full conversation context,
+then has that independent reviewer audit them against the actual code.
+You describe what you want and stay in the chat.
 
 ## Quick start
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/aminmarashi/cerebro/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/aminnew10/cerebro/main/install.sh | bash
 cerebro
 ```
 
 Name a repo by path, describe the change, read the plan it drafts, say
-"go". Requires `claude`, `codex`, `jq`, `python3` (plus `git`/`gh` for
-the PR work, `rg` recommended).
+"go". Requires `opencode`, `jq`, `python3` (plus `git`/`gh` for
+the PR work, `rg` recommended). Uses Claude Opus for implementation and
+GPT-5.5 for review by default (override with `CEREBRO_MODEL` /
+`CEREBRO_REVIEW_MODEL`).
 
 ## What you get
 
-* **Planned, reviewed PRs** — plan → your "go" → branch, PR, codex
+* **Planned, reviewed PRs** — plan → your "go" → branch, PR, an independent (GPT-5.5)
   review loop, fixes applied, docs updated.
 * **Verified, not just green** — done means the change was observed
   working in the running app (Playwright or with you), never unit
@@ -56,7 +59,7 @@ command). Each block is collapsible — click to expand.
 <summary><strong>Ship a feature (the core loop)</strong></summary>
 
 Name a repo, describe the change, read the plan it drafts, and say go.
-You get a branch, a PR, a codex review loop with fixes applied, and
+You get a branch, a PR, an independent (GPT-5.5) review loop with fixes applied, and
 end-to-end verification in the running app.
 
 > Example prompt: "In ~/code/api, add rate limiting to the login endpoint — draft a plan first."

@@ -1,5 +1,5 @@
 # cerebro lib: commands/session
-# subcommands: launch / --resume / list
+# subcommands: launch / --resume / --observe / list
 # Sourced by bin/cerebro; not meant to be executed directly.
 
 # ----- subcommand: cerebro (launch new session) ----------------------------
@@ -8,12 +8,12 @@
 learnings_file()         { printf '%s\n' "$CEREBRO_HOME/learnings.md"; }
 pending_learnings_file() { printf '%s\n' "$CEREBRO_HOME/pending-learnings.md"; }
 
-# Build the orchestrator's full system prompt: the static catalog plus, when
-# present, the user's learned preferences. learnings.md is kept small (capped
-# by cmd_learn_set) so it fits in the system message; a whitespace-only file
-# is treated as empty. Echoed on stdout.
+# Build the orchestrator's full system prompt: the static catalog (shipped as a
+# payload) plus, when present, the user's learned preferences. learnings.md is
+# kept small (capped by cmd_learn_set) so it fits in the system message; a
+# whitespace-only file is treated as empty. Echoed on stdout.
 orchestrator_append_prompt() {
-  local base; base="$(cat "$CEREBRO_HOME/system-prompt.md")"
+  local base; base="$(cerebro_system_prompt)"
   local lf body=""
   lf="$(learnings_file)"
   if [[ -s "$lf" ]]; then
@@ -25,6 +25,17 @@ orchestrator_append_prompt() {
   else
     printf '%s\n' "$base"
   fi
+}
+
+# Write the orchestrator agent definition for this launch into the opencode
+# config dir. It carries the composed system prompt (catalog + learnings) as its
+# body and the read-only permission clamp in its frontmatter. Regenerated each
+# launch so learned preferences stay current. Echoes the agent name.
+write_orchestrator_agent() {
+  local body; body="$(orchestrator_append_prompt)"
+  write_if_changed "$CEREBRO_HOME/.opencode/agent/cerebro-orchestrator.md" \
+    "$(orchestrator_agent_file "$body")"
+  printf 'cerebro-orchestrator\n'
 }
 
 cmd_launch() {
@@ -40,6 +51,8 @@ cmd_launch() {
   ts="$(ts_iso)"
   write_metadata_new "$sess_dir" "$sid" "$ts"
 
+  local agent; agent="$(write_orchestrator_agent)"
+
   export CEREBRO_SESSION_ID="$sid"
   export CEREBRO_SESSION_DIR="$sess_dir"
   export CEREBRO_HOME
@@ -48,10 +61,12 @@ cmd_launch() {
 
   say "cerebro: starting session $sid"
   cd "$CEREBRO_HOME" || die "cd to $CEREBRO_HOME failed"
-  exec claude \
-    --session-id "$sid" \
-    --append-system-prompt "$(orchestrator_append_prompt)" \
-    --allowedTools "Bash(cerebro:*) Read Grep Glob WebSearch WebFetch mcp__playwright__*"
+  # opencode assigns its own session id; the cerebro plugin records it into
+  # metadata.json so `cerebro --resume` can reopen the same conversation. The
+  # exported CEREBRO_SESSION_ID binds every `cerebro` subcommand the
+  # orchestrator runs back to this session (opencode's bash tool inherits env).
+  local model_opt=(); [[ -n "$CEREBRO_MODEL" ]] && model_opt=(--model "$CEREBRO_MODEL")
+  exec "$CEREBRO_OPENCODE_CMD" --agent "$agent" "${model_opt[@]}"
 }
 
 # Build the observer session's system prompt: the full orchestrator prompt
@@ -69,6 +84,15 @@ observer_append_prompt() {
   else
     printf '%s\n\n%s\n' "$base" "$mode"
   fi
+}
+
+# Write the observer agent definition for this launch. Echoes the agent name.
+write_observer_agent() {
+  local target="${1:-}" body
+  body="$(observer_append_prompt "$target")"
+  write_if_changed "$CEREBRO_HOME/.opencode/agent/cerebro-observer.md" \
+    "$(observer_agent_file "$body")"
+  printf 'cerebro-observer\n'
 }
 
 # ----- subcommand: cerebro --observe [<id>] --------------------------------
@@ -93,12 +117,12 @@ observer_wait_until_observable() {
   done
 }
 
-# Launch a native interactive `claude` chat dedicated to observing and
+# Launch a native interactive `opencode` chat dedicated to observing and
 # steering another cerebro session's live paired children. Same session
-# plumbing as cmd_launch, but the system prompt is the observe-mode overlay
-# and the tool allow-list is narrowed to observe + steer + read-only commands,
-# so this session can never make direct repo changes. Optional first arg is
-# the target session id to watch by default.
+# plumbing as cmd_launch, but the agent is the observe-mode one whose tools are
+# narrowed to observe + steer + read-only commands, so this session can never
+# make direct repo changes. Optional first arg is the target session id to watch
+# by default.
 cmd_launch_observer() {
   require_interactive
   require_deps
@@ -117,6 +141,8 @@ cmd_launch_observer() {
   ts="$(ts_iso)"
   write_metadata_new "$sess_dir" "$sid" "$ts"
 
+  local agent; agent="$(write_observer_agent "$target")"
+
   export CEREBRO_SESSION_ID="$sid"
   export CEREBRO_SESSION_DIR="$sess_dir"
   export CEREBRO_HOME
@@ -126,25 +152,16 @@ cmd_launch_observer() {
   say "cerebro: starting observer session $sid${target:+ (watching $target)}"
   cd "$CEREBRO_HOME" || die "cd to $CEREBRO_HOME failed"
 
-  # When a target is given, seed an interactive first turn so the observer
-  # starts narrating immediately instead of waiting for the user to type.
-  # A positional prompt without -p keeps the session interactive; it just
-  # submits as the first user message. The prompt MUST come before the
-  # variadic --allowedTools (<tools...>), which would otherwise swallow it
-  # as another tool token. With no target we stay fully interactive so the
-  # user can pick which session to watch.
-  local allowed="Bash(cerebro observe:*) Bash(cerebro steer:*) Bash(cerebro restart:*) Bash(cerebro status:*) Bash(cerebro list:*) Bash(cerebro recall:*) Bash(cerebro spec:*) Bash(cerebro learnings:*) Read Grep Glob WebSearch WebFetch mcp__playwright__*"
+  # When a target is given, seed an interactive first turn (via --prompt) so the
+  # observer starts narrating immediately instead of waiting for the user to
+  # type. With no target we stay fully interactive so the user can pick which
+  # session to watch.
+  local model_opt=(); [[ -n "$CEREBRO_MODEL" ]] && model_opt=(--model "$CEREBRO_MODEL")
   if [[ -n "$target" ]]; then
-    exec claude \
-      --session-id "$sid" \
-      --append-system-prompt "$(observer_append_prompt "$target")" \
-      "Start observing session $target now: run \`cerebro observe $target\`, narrate what you see, and keep looping until its children are done or I stop you." \
-      --allowedTools "$allowed"
+    exec "$CEREBRO_OPENCODE_CMD" --agent "$agent" "${model_opt[@]}" \
+      --prompt "Start observing session $target now: run \`cerebro observe $target\`, narrate what you see, and keep looping until its children are done or I stop you."
   else
-    exec claude \
-      --session-id "$sid" \
-      --append-system-prompt "$(observer_append_prompt "$target")" \
-      --allowedTools "$allowed"
+    exec "$CEREBRO_OPENCODE_CMD" --agent "$agent" "${model_opt[@]}"
   fi
 }
 
@@ -158,31 +175,39 @@ cmd_resume() {
   local id="${1:-}"
   export CEREBRO_HOME
 
-  if [[ -n "$id" ]]; then
-    local sess_dir="$CEREBRO_HOME/sessions/$id"
-    [[ -d "$sess_dir" ]] || die "no such session: $id"
-    touch_metadata "$sess_dir" "$(ts_iso)"
-    export CEREBRO_SESSION_ID="$id"
-    export CEREBRO_SESSION_DIR="$sess_dir"
-    say "cerebro: resuming session $id"
-  else
-    # Bare resume: claude shows its own picker. The hook will write the
-    # current-session symlink as soon as the user submits their first
-    # prompt, and orchestrator subcommands fall back to that.
-    say "cerebro: resuming via claude's picker"
+  # With no id, resume the most recently touched session (opencode has no
+  # cross-session picker of its own, and cerebro now identifies sessions by its
+  # own id rather than relying on a hook).
+  if [[ -z "$id" ]]; then
+    id="$(python3 "$CEREBRO_LIB_DIR/python/list_sessions.py" "$CEREBRO_HOME/sessions" --most-recent 2>/dev/null)"
+    [[ -n "$id" ]] || die "no sessions to resume"
+    say "cerebro: resuming most recent session $id"
   fi
 
+  local sess_dir="$CEREBRO_HOME/sessions/$id"
+  [[ -d "$sess_dir" ]] || die "no such session: $id"
+  touch_metadata "$sess_dir" "$(ts_iso)"
+
+  local agent; agent="$(write_orchestrator_agent)"
+
+  export CEREBRO_SESSION_ID="$id"
+  export CEREBRO_SESSION_DIR="$sess_dir"
+  say "cerebro: resuming session $id"
+
+  # Reopen the same opencode conversation when we captured its id at launch;
+  # otherwise start a fresh opencode session in this same cerebro session dir
+  # (cerebro state -- spec, plans, children -- persists regardless).
+  local ocid=""
+  [[ -f "$sess_dir/metadata.json" ]] && \
+    ocid="$(jq -r '.opencode_session_id // empty' "$sess_dir/metadata.json" 2>/dev/null)"
+
   cd "$CEREBRO_HOME" || die "cd to $CEREBRO_HOME failed"
-  if [[ -n "$id" ]]; then
-    exec claude \
-      --resume "$id" \
-      --append-system-prompt "$(orchestrator_append_prompt)" \
-      --allowedTools "Bash(cerebro:*) Read Grep Glob WebSearch WebFetch mcp__playwright__*"
+  local model_opt=(); [[ -n "$CEREBRO_MODEL" ]] && model_opt=(--model "$CEREBRO_MODEL")
+  if [[ -n "$ocid" ]]; then
+    exec "$CEREBRO_OPENCODE_CMD" --session "$ocid" --agent "$agent" "${model_opt[@]}"
   else
-    exec claude \
-      --resume \
-      --append-system-prompt "$(orchestrator_append_prompt)" \
-      --allowedTools "Bash(cerebro:*) Read Grep Glob WebSearch WebFetch mcp__playwright__*"
+    warn "no stored opencode session id for $id; starting a fresh opencode conversation"
+    exec "$CEREBRO_OPENCODE_CMD" --agent "$agent" "${model_opt[@]}"
   fi
 }
 
@@ -198,4 +223,3 @@ cmd_list() {
   # Sort by metadata.last_touched, newest first.
   python3 "$CEREBRO_LIB_DIR/python/list_sessions.py" "$CEREBRO_HOME/sessions"
 }
-

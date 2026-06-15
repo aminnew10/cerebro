@@ -1,224 +1,211 @@
-# The input-pump for a paired child (`--pair`). stdin carries the initial
-# prompt; argv is <fifo> <steer_path> <child_log> <idle_grace> <pgid_file>
-# <stall_secs> <stall_busy_secs>. It emits the prompt as the first stream-json
-# user message, then watches <child_log> for the `result` event that ends each
-# turn. After each turn it waits up to <idle_grace> seconds for a one-shot
-# `cerebro steer` message to arrive over <fifo> ("S <base64>" per message);
-# each message is forwarded as the next user turn and appended to <steer_path>,
-# and resets the window. A quiet window closes claude's stdin so the child
-# finishes.
+# The input-pump for a paired child (`--pair`), driving a child agent that runs
+# under a headless `opencode serve`. stdin carries the initial prompt; argv is
+#   <base_url> <session_id> <agent> <model> <fifo> <steer_path> <child_log>
+#   <idle_grace> <stall_secs> <stall_busy_secs>
 #
-# Liveness: while a turn is in progress, the pump tracks child-log growth. If
-# the stream log freezes, an idle agent is killed after <stall_secs>. An agent
-# with a tool_use still awaiting a matching tool_result gets <stall_busy_secs>,
-# unless Claude's durable session log already has that tool_result; that means
-# the child kept working but stdout stream-json wedged, so the normal idle
-# threshold is enough.
+# It POSTs the initial prompt to the session, subscribes to the server's SSE
+# event stream, and re-emits each assistant message part on stdout in the SAME
+# shape as `opencode run --format json` (so the downstream `tee child_log |
+# parse_stream.py` captures the session id + closing message, and `cerebro
+# observe` can narrate the child_log). After each turn (a `session.idle` event)
+# it waits up to <idle_grace> seconds for a one-shot `cerebro steer` message to
+# arrive over <fifo> ("S <base64>" per message); each is POSTed as the next user
+# turn and appended to <steer_path>, resetting the window. A quiet window ends
+# the run. A frozen event stream is reaped (POST .../abort) and flagged stalled;
+# an "R <base64>" restart line aborts and flags the child for a clean relaunch.
+#
+# Pure stdlib (urllib) so it has no dependencies beyond python3.
 
-import base64, glob, json, os, select, signal, sys, time
+import base64, json, os, sys, threading, time, queue
+import urllib.request
 
-fifo, steer_path, child_log = sys.argv[1], sys.argv[2], sys.argv[3]
-idle_grace = float(sys.argv[4])
-pgid_file = sys.argv[5] if len(sys.argv) > 5 else ""
-stall_secs = float(sys.argv[6]) if len(sys.argv) > 6 and sys.argv[6] else 180.0
-stall_busy_secs = float(sys.argv[7]) if len(sys.argv) > 7 and sys.argv[7] else 450.0
+base_url   = sys.argv[1].rstrip("/")
+session_id = sys.argv[2]
+agent      = sys.argv[3]
+model      = sys.argv[4]
+fifo       = sys.argv[5]
+steer_path = sys.argv[6]
+child_log  = sys.argv[7]
+idle_grace = float(sys.argv[8])
+stall_secs = float(sys.argv[9]) if sys.argv[9] else 180.0
+stall_busy_secs = float(sys.argv[10]) if len(sys.argv) > 10 and sys.argv[10] else 450.0
 
-def emit(text):
+
+def _post(path, payload):
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(base_url + path, data=data,
+                                 headers={"content-type": "application/json"},
+                                 method="POST")
     try:
-        sys.stdout.write(json.dumps(
-            {"type": "user", "message": {"role": "user", "content": text}},
-            ensure_ascii=False) + "\n")
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.status
+    except Exception:
+        return 0
+
+
+def send_prompt(text):
+    body = {"parts": [{"type": "text", "text": text}], "agent": agent}
+    if model:
+        body["model"] = model
+    return _post(f"/session/{session_id}/prompt_async", body)
+
+
+def abort_session():
+    _post(f"/session/{session_id}/abort", {})
+
+
+def serve_alive():
+    # Cheap liveness probe. A SIGKILL'd server can leave the SSE socket
+    # half-open (the streaming read blocks for ages), so we actively check the
+    # health endpoint to decide whether the server is really gone.
+    try:
+        with urllib.request.urlopen(base_url + "/global/health", timeout=2):
+            return True
+    except Exception:
+        return False
+
+
+def emit(obj):
+    try:
+        sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
         sys.stdout.flush()
     except (BrokenPipeError, OSError):
         return False
     return True
 
-def downstream_open():
-    p = select.poll()
-    p.register(sys.stdout.fileno(), select.POLLOUT)
-    for _fd, revents in p.poll(0):
-        if revents & (select.POLLHUP | select.POLLERR | select.POLLNVAL):
-            return False
-    return True
 
-def turns_completed():
-    n = 0
-    try:
-        with open(child_log) as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    ev = json.loads(line)
-                except ValueError:
-                    continue
-                if ev.get("type") == "result":
-                    n += 1
-    except OSError:
-        pass
-    return n
+# ----- SSE reader thread ----------------------------------------------------
+# Pushes translated run-format events onto a queue and tracks liveness. Roles
+# are tracked per message id (from message.updated) so we only surface the
+# assistant's own parts, never the user prompt echoed back.
+ev_q = queue.Queue()
+state = {"last_activity": time.monotonic(), "idle": False, "stop": False,
+         "serve_dead": False}
+roles = {}
 
-def events(path):
-    try:
-        with open(path) as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    yield json.loads(line)
-                except ValueError:
-                    continue
-    except OSError:
-        return
 
-def tool_state(path):
-    issued, returned = set(), set()
-    for ev in events(path):
-        etype = ev.get("type")
-        content = (ev.get("message") or {}).get("content")
-        if not isinstance(content, list):
-            continue
-        for block in content:
-            if not isinstance(block, dict):
-                continue
-            if etype == "assistant" and block.get("type") == "tool_use":
-                bid = block.get("id")
-                if bid is not None:
-                    issued.add(bid)
-            elif etype == "user" and block.get("type") == "tool_result":
-                tid = block.get("tool_use_id")
-                if tid is not None:
-                    returned.add(tid)
-    return issued, returned
-
-def pending_tools(path):
-    issued, returned = tool_state(path)
-    return issued - returned
-
-def command_in_flight():
-    return bool(pending_tools(child_log))
-
-def child_session_id():
-    for ev in events(child_log):
-        sid = ev.get("session_id")
-        if sid:
-            return sid
-    return ""
-
-durable_log = ""
-
-def durable_session_log():
-    global durable_log
-    if durable_log and os.path.exists(durable_log):
-        return durable_log
-    sid = child_session_id()
-    if not sid:
-        return ""
-    matches = glob.glob(os.path.expanduser(f"~/.claude/projects/*/{sid}.jsonl"))
-    if not matches:
-        return ""
-    durable_log = max(matches, key=lambda p: os.path.getmtime(p))
-    return durable_log
-
-def durable_returned_pending_tool():
-    pending = pending_tools(child_log)
-    if not pending:
-        return False
-    dlog = durable_session_log()
-    if not dlog:
-        return False
-    _issued, returned = tool_state(dlog)
-    return bool(pending & returned)
-
-def read_child_pgid():
-    try:
-        with open(pgid_file) as f:
-            pgid = int(f.read().strip())
-    except (OSError, ValueError):
-        return None
-    if pgid <= 1 or pgid == os.getpgrp():
-        return None
-    return pgid
-
-def reap_child():
-    pgid = read_child_pgid()
-    if pgid is None:
-        return
-    try:
-        os.killpg(pgid, signal.SIGTERM)
-    except (ProcessLookupError, OSError):
-        return
-    deadline = time.monotonic() + 2.0
-    while time.monotonic() < deadline:
+def sse_loop():
+    # Reconnect on transient drops, but if the server is persistently
+    # unreachable (it died), flag it so the main loop can bail fast instead of
+    # waiting out the long stall timeout on a corpse.
+    fails = 0
+    while not state["stop"]:
         try:
-            os.killpg(pgid, 0)
-        except (ProcessLookupError, OSError):
+            req = urllib.request.Request(base_url + "/event")
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                fails = 0
+                for raw in resp:
+                    if state["stop"]:
+                        return
+                    line = raw.decode("utf-8", "replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    try:
+                        ev = json.loads(line[5:].strip())
+                    except ValueError:
+                        continue
+                    handle_event(ev)
+        except Exception:
+            if state["stop"]:
+                return
+            fails += 1
+            if fails >= 10:
+                state["serve_dead"] = True
+                return
+            time.sleep(0.5)
+
+
+def handle_event(ev):
+    t = ev.get("type") or ""
+    props = ev.get("properties") or {}
+    sid = props.get("sessionID") or (props.get("info") or {}).get("id")
+    if sid and sid != session_id:
+        return
+
+    if t == "message.updated":
+        info = props.get("info") or {}
+        mid = info.get("id")
+        role = info.get("role")
+        if mid and role:
+            roles[mid] = role
+        return
+
+    if t == "message.part.updated":
+        part = props.get("part") or {}
+        mid = part.get("messageID")
+        # Skip the user's own prompt parts; only surface assistant output.
+        if roles.get(mid) == "user":
             return
-        time.sleep(0.1)
-    try:
-        os.killpg(pgid, signal.SIGKILL)
-    except (ProcessLookupError, OSError):
-        pass
+        ptype = part.get("type")
+        state["last_activity"] = time.monotonic()
+        if ptype == "text":
+            ev_q.put({"type": "text", "sessionID": session_id, "part": part})
+        elif ptype == "tool":
+            # Only surface a tool part once it has a terminal state, matching
+            # `opencode run --format json` (which emits tool_use on completion).
+            st = (part.get("state") or {}).get("status")
+            if st in ("completed", "error"):
+                ev_q.put({"type": "tool_use", "sessionID": session_id, "part": part})
+        elif ptype == "step-start":
+            ev_q.put({"type": "step_start", "sessionID": session_id, "part": part})
+        elif ptype == "step-finish":
+            ev_q.put({"type": "step_finish", "sessionID": session_id, "part": part})
+        return
 
-def mark_stalled(reason="stalled"):
-    try:
-        with open(child_log, "a") as fh:
-            fh.write(json.dumps(
-                {"type": "result", "subtype": "stalled", "is_error": True, "reason": reason},
-                ensure_ascii=False) + "\n")
-    except OSError:
-        pass
-    marker = (child_log[:-6] if child_log.endswith(".jsonl") else child_log) + ".stalled"
-    try:
-        with open(marker, "w"):
-            pass
-    except OSError:
-        pass
+    if t == "session.idle":
+        # session.idle is opencode's turn-complete signal. Emit a run-format
+        # step_finish(stop) so the child log carries turn boundaries (matching
+        # `opencode run --format json`), then open the steering window.
+        ev_q.put({"type": "step_finish", "sessionID": session_id,
+                  "part": {"type": "step-finish", "reason": "stop"}})
+        state["idle"] = True
+        state["last_activity"] = time.monotonic()
+        return
 
-restart_path = (child_log[:-6] if child_log.endswith(".jsonl") else child_log) + ".restart"
+    if t == "session.error":
+        err = props.get("error") or {}
+        ev_q.put({"type": "error", "sessionID": session_id, "error": err})
+        state["idle"] = True
+        return
 
-def mark_restart(diag):
-    try:
-        with open(child_log, "a") as fh:
-            fh.write(json.dumps(
-                {"type": "result", "subtype": "restarted", "is_error": True},
-                ensure_ascii=False) + "\n")
-    except OSError:
-        pass
-    try:
-        with open(restart_path, "w") as fh:
-            fh.write(diag)
-    except OSError:
-        pass
 
-if not emit(sys.stdin.read()):
-    sys.exit(0)
+def drain_queue():
+    alive = True
+    while True:
+        try:
+            obj = ev_q.get_nowait()
+        except queue.Empty:
+            break
+        if not emit(obj):
+            alive = False
+    return alive
 
+
+# ----- steering fifo --------------------------------------------------------
 # O_RDWR keeps a writer fd open on our side so the pipe never reports EOF as
 # one-shot `cerebro steer` writers come and go, and never blocks on open.
 fd = os.open(fifo, os.O_RDWR | os.O_NONBLOCK)
-buf = b""
-pending = []
+fbuf = b""
+pending_steer = []
 restart_pending = False
 restart_diag = ""
 
-def refill():
-    global buf, restart_pending, restart_diag
+
+def refill_fifo():
+    global fbuf, restart_pending, restart_diag
     try:
         chunk = os.read(fd, 65536)
     except (BlockingIOError, OSError):
         return
     if not chunk:
         return
-    buf += chunk
-    while b"\n" in buf:
-        raw, buf = buf.split(b"\n", 1)
+    fbuf += chunk
+    while b"\n" in fbuf:
+        raw, fbuf = fbuf.split(b"\n", 1)
         s = raw.decode("utf-8", "replace").strip()
         if s.startswith("S "):
             try:
-                pending.append(base64.b64decode(s[2:]).decode("utf-8", "replace"))
+                pending_steer.append(base64.b64decode(s[2:]).decode("utf-8", "replace"))
             except Exception:
                 pass
         elif s.startswith("R "):
@@ -228,56 +215,118 @@ def refill():
                 restart_diag = ""
             restart_pending = True
 
-done_turns = 0
+
+def mark_stalled(reason="stalled"):
+    try:
+        emit({"type": "step_finish", "sessionID": session_id,
+              "part": {"type": "step-finish", "reason": "stalled", "is_error": True}})
+    except Exception:
+        pass
+    marker = (child_log[:-6] if child_log.endswith(".jsonl") else child_log) + ".stalled"
+    try:
+        with open(marker, "w"):
+            pass
+    except OSError:
+        pass
+
+
+restart_path = (child_log[:-6] if child_log.endswith(".jsonl") else child_log) + ".restart"
+
+
+def mark_restart(diag):
+    try:
+        emit({"type": "step_finish", "sessionID": session_id,
+              "part": {"type": "step-finish", "reason": "restarted", "is_error": True}})
+    except Exception:
+        pass
+    try:
+        with open(restart_path, "w") as fh:
+            fh.write(diag)
+    except OSError:
+        pass
+
+
+# ----- drive the session ----------------------------------------------------
+initial_prompt = sys.stdin.read()
+
+reader = threading.Thread(target=sse_loop, daemon=True)
+reader.start()
+# Give the SSE subscription a moment to attach before the first prompt so we
+# don't miss early parts.
+time.sleep(0.4)
+
+if send_prompt(initial_prompt) == 0:
+    state["stop"] = True
+    sys.exit(1)
+
 idle_deadline = None
-last_size = os.path.getsize(child_log) if os.path.exists(child_log) else 0
-last_grew = time.monotonic()
+last_health_probe = time.monotonic()
+health_fails = 0
 
 while True:
-    refill()
-    # A restart can arrive mid-turn or in the idle window; handling it first,
-    # before any steer/idle logic, makes it unconditional and immediate.
+    refill_fifo()
     if restart_pending:
-        reap_child()
+        abort_session()
+        state["stop"] = True
+        drain_queue()
         mark_restart(restart_diag)
         sys.exit(0)
-    if not downstream_open():
+
+    # The server died and isn't coming back: reap fast rather than waiting out
+    # the long stall timeout on an unreachable session.
+    if state["serve_dead"]:
+        state["stop"] = True
+        drain_queue()
+        mark_stalled("serve_unreachable")
         sys.exit(0)
 
-    completed = turns_completed()
+    if not drain_queue():
+        state["stop"] = True
+        abort_session()
+        sys.exit(0)
 
-    if idle_deadline is None:
-        sz = os.path.getsize(child_log) if os.path.exists(child_log) else 0
-        if sz > last_size:
-            last_size, last_grew = sz, time.monotonic()
-        if completed > done_turns:
-            done_turns = completed
+    if state["idle"]:
+        if idle_deadline is None:
             idle_deadline = time.monotonic() + idle_grace
-        else:
-            silence = time.monotonic() - last_grew
-            if silence >= stall_secs:
-                busy = command_in_flight()
-                stream_diverged = busy and durable_returned_pending_tool()
-                if (not busy) or stream_diverged or silence >= stall_busy_secs:
-                    reap_child()
-                    mark_stalled("stream_diverged" if stream_diverged else "quiet")
-                    sys.exit(0)
-    else:
-        if completed > done_turns:
-            done_turns = completed
-        if pending:
-            msg = pending.pop(0)
-            if not emit(msg):
-                sys.exit(0)
+        if pending_steer:
+            msg = pending_steer.pop(0)
+            # Clear idle BEFORE sending: send_prompt is synchronous, and the
+            # server can emit the steered turn's session.idle before it returns.
+            # If we cleared idle after, the SSE thread's idle=True for the new
+            # turn would be clobbered and the pump would never finish.
+            state["idle"] = False
+            idle_deadline = None
+            state["last_activity"] = time.monotonic()
+            send_prompt(msg)
             try:
                 with open(steer_path, "a") as sf:
                     sf.write("- " + msg.replace("\n", "\n  ") + "\n")
             except OSError:
                 pass
-            idle_deadline = None
-            last_size = os.path.getsize(child_log) if os.path.exists(child_log) else 0
-            last_grew = time.monotonic()
         elif time.monotonic() >= idle_deadline:
+            state["stop"] = True
+            sys.exit(0)
+    else:
+        silence = time.monotonic() - state["last_activity"]
+        # When the stream has been quiet for a few seconds, actively probe the
+        # server. If it is unreachable (died), reap fast instead of waiting out
+        # the full stall window on a corpse.
+        if silence >= 3 and (time.monotonic() - last_health_probe) >= 2:
+            last_health_probe = time.monotonic()
+            if not serve_alive():
+                health_fails += 1
+                if health_fails >= 2:
+                    state["stop"] = True
+                    drain_queue()
+                    mark_stalled("serve_unreachable")
+                    sys.exit(0)
+            else:
+                health_fails = 0
+        if silence >= stall_busy_secs:
+            abort_session()
+            state["stop"] = True
+            drain_queue()
+            mark_stalled("quiet")
             sys.exit(0)
 
     time.sleep(0.3)

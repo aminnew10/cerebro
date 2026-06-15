@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# uninstall.sh - Remove the aminmarashi/cerebro install: drop the `cerebro`
+# uninstall.sh - Remove the aminnew10/cerebro install: drop the `cerebro`
 # symlinks and clean the PATH block the installer added.
 #
 # Usage:
@@ -28,8 +28,8 @@ for link in "$BINDIR/cerebro" "$BINDIR/cerebro-uninstall"; do
   fi
 done
 
-MARK_OPEN="# >>> cerebro (aminmarashi) >>>"
-MARK_CLOSE="# <<< cerebro (aminmarashi) <<<"
+MARK_OPEN="# >>> cerebro (aminnew10) >>>"
+MARK_CLOSE="# <<< cerebro (aminnew10) <<<"
 
 for rc in \
   "$HOME/.zshrc" \

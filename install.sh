@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install.sh - Install aminmarashi/cerebro by cloning the repo and symlinking
+# install.sh - Install aminnew10/cerebro by cloning the repo and symlinking
 # the `cerebro` entry point onto your PATH.
 #
 # cerebro is a Bash CLI split across a library (lib/*.sh), so it is not a
@@ -7,17 +7,17 @@
 # bin dir on your PATH; the entry point resolves the symlink back to its libs.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/aminmarashi/cerebro/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/aminnew10/cerebro/main/install.sh | bash
 #
 # Env:
 #   CEREBRO_REF       git ref to install                 (default: main)
 #   CEREBRO_SRC       where to clone the source           (default: $HOME/.local/share/cerebro)
 #   CEREBRO_BINDIR    dir for the `cerebro` symlink        (default: $HOME/bin)
-#   CEREBRO_REPO_URL  clone URL                            (default: https://github.com/aminmarashi/cerebro.git)
+#   CEREBRO_REPO_URL  clone URL                            (default: https://github.com/aminnew10/cerebro.git)
 
 set -euo pipefail
 
-REPO_URL="${CEREBRO_REPO_URL:-https://github.com/aminmarashi/cerebro.git}"
+REPO_URL="${CEREBRO_REPO_URL:-https://github.com/aminnew10/cerebro.git}"
 REF="${CEREBRO_REF:-main}"
 SRC="${CEREBRO_SRC:-$HOME/.local/share/cerebro}"
 BINDIR="${CEREBRO_BINDIR:-$HOME/bin}"
@@ -64,8 +64,8 @@ detect_rc() {
 }
 
 RC="$(detect_rc)"
-MARK_OPEN="# >>> cerebro (aminmarashi) >>>"
-MARK_CLOSE="# <<< cerebro (aminmarashi) <<<"
+MARK_OPEN="# >>> cerebro (aminnew10) >>>"
+MARK_CLOSE="# <<< cerebro (aminnew10) <<<"
 
 case ":${PATH:-}:" in
   *":$BINDIR:"*) say "$BINDIR already on PATH" ;;
@@ -88,5 +88,5 @@ case ":${PATH:-}:" in
     fi ;;
 esac
 
-say "Done. Run 'cerebro' to start (needs claude, codex, jq, python3 on PATH)."
+say "Done. Run 'cerebro' to start (needs opencode, jq, python3 on PATH)."
 say "Uninstall any time with: cerebro-uninstall"

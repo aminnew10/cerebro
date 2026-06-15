@@ -131,15 +131,16 @@ usage:
   cerebro list                  # list sessions, newest first
   cerebro --help                # this help
 
-cerebro launches a native interactive `claude` chat configured as an
+cerebro launches a native interactive `opencode` chat configured as an
 orchestrator. The orchestrator drives the plan -> execute -> review loop
 by calling `cerebro <subcommand>` against your repositories on your
 behalf. You stay in the chat -- you don't type the sub-commands yourself.
 
-The orchestrator's tools are restricted to Read, Grep, Glob, and
-`Bash(cerebro:*)`. Every git/gh/codex action and every file edit happens
-inside a short-lived sub-agent that cerebro spawns; the orchestrator
-itself can't touch repos directly.
+The orchestrator runs as a restricted opencode agent: its tools are
+clamped to read/grep/glob plus `bash` limited to `cerebro ...` (no edit,
+no write, no subagent Task delegation). Every git/gh/review action and
+every file edit happens inside a short-lived sub-agent that cerebro
+spawns; the orchestrator itself can't touch repos directly.
 
 Notes:
   * Interactive-only. cerebro refuses to run under a non-terminal parent
@@ -148,9 +149,9 @@ Notes:
   * Concurrency. cerebro has no concurrency control: it will not stop
     you from running two mutating ops against the same repo at once,
     within or across sessions. Sequence your own mutating work.
-  * No chat/PR/repo-specific flags are ever passed to `claude` or
-    `codex`. The orchestrator addresses repos by absolute path as the
-    first positional arg to its sub-agent tools.
+  * No chat/PR/repo-specific flags are ever passed to `opencode`. The
+    orchestrator addresses repos by absolute path as the first positional
+    arg to its sub-agent tools.
   * Paused children. A spawned child (execute / apply-review /
     doc-write) runs non-interactively and cannot ask questions mid-run.
     When it hits a genuine blocker it ends with its question as its final
@@ -160,7 +161,7 @@ Notes:
     continues where it paused.
   * Pair programming. Ask the orchestrator to "pair" (or watch / steer)
     an execute, apply-review, or doc-write child and it adds
-    `--pair`: the child runs with claude's stream-json input so you can
+    `--pair`: the child runs under a headless `opencode serve` so you can
     WATCH it live from ANOTHER cerebro session -- ask that session to
     "observe <the paired session's id>" and it narrates, in plain English,
     what every live paired child is doing (and steers on your command) --
@@ -170,7 +171,7 @@ Notes:
     completion on its own; after each turn it waits a short window
     (CEREBRO_PAIR_IDLE, default 60s) for steering, and a quiet window
     finishes it. If the child stream freezes, cerebro kills only that
-    child process group and restarts it with --resume, bounded by
+    child and restarts it with --resume, bounded by
     CEREBRO_PAIR_STALL_RETRIES. Each steering message is injected into
     the running session and recorded; when the child ends the orchestrator
     folds your steering into the session spec and the upcoming plans, then
@@ -182,13 +183,13 @@ Notes:
     makes no direct repo changes -- it is the pair-programming "watcher"
     seat as a first-class session instead of a mode you ask for mid-chat.
 
-Requirements: claude, codex, jq, python3. Child claudes additionally
+Requirements: opencode, jq, python3. Child opencode runs additionally
 need git and gh on PATH for execute / apply-review / doc-write.
 
 Env: CEREBRO_HOME, CEREBRO_MODEL, CEREBRO_REVIEW_MODEL, CEREBRO_TIMEOUT,
-CEREBRO_CODEX_CMD, CEREBRO_CHILD_SESSION_TTL, CEREBRO_PAIR_IDLE,
-CEREBRO_PAIR_STALL, CEREBRO_PAIR_STALL_BUSY, CEREBRO_PAIR_STALL_RETRIES,
-CEREBRO_PAIR_STALL_BACKOFF,
+CEREBRO_OPENCODE_CMD, CEREBRO_CHILD_SESSION_TTL,
+CEREBRO_PAIR_IDLE, CEREBRO_PAIR_STALL, CEREBRO_PAIR_STALL_BUSY,
+CEREBRO_PAIR_STALL_RETRIES, CEREBRO_PAIR_STALL_BACKOFF,
 CEREBRO_DEBUG.
 EOF
 }
@@ -214,23 +215,17 @@ require_interactive() {
 
 require_deps() {
   local cmd
-  for cmd in claude "$CEREBRO_CODEX_CMD" jq python3; do
+  for cmd in "$CEREBRO_OPENCODE_CMD" jq python3; do
     command -v "$cmd" >/dev/null 2>&1 || die "missing required command on PATH: $cmd"
   done
 }
 
+# cerebro binds an interactive opencode process to its session by exporting
+# CEREBRO_SESSION_ID into that process; opencode's bash tool inherits the env,
+# so every `cerebro <subcommand>` the orchestrator runs sees it. A session is
+# therefore always identified by that env var -- there is no picker fallback.
 require_session() {
-  [[ -n "${CEREBRO_SESSION_ID:-}" ]] || {
-    # Bare-resume fallback: hook writes a current-session symlink on
-    # first user prompt, pointing at sessions/<id>/.
-    if [[ -L "$CEREBRO_HOME/current-session" ]]; then
-      local target
-      target="$(readlink "$CEREBRO_HOME/current-session")"
-      target="${target##*/}"
-      [[ -n "$target" ]] && export CEREBRO_SESSION_ID="$target"
-    fi
-  }
-  [[ -n "${CEREBRO_SESSION_ID:-}" ]] || die "no current cerebro session (CEREBRO_SESSION_ID unset and no current-session symlink). Did you launch this from a `cerebro` shell?"
+  [[ -n "${CEREBRO_SESSION_ID:-}" ]] || die "no current cerebro session (CEREBRO_SESSION_ID unset). Did you launch this from a \`cerebro\` shell?"
   CEREBRO_SESSION_DIR="$CEREBRO_HOME/sessions/$CEREBRO_SESSION_ID"
   [[ -d "$CEREBRO_SESSION_DIR" ]] || die "session dir missing: $CEREBRO_SESSION_DIR"
   export CEREBRO_SESSION_DIR
@@ -312,27 +307,33 @@ build_timeout_cmd() {
   fi
 }
 
-# Write the payloads (hook.sh, system-prompt.md, settings.local.json) from
-# lib/payloads/ into $CEREBRO_HOME. Idempotent: existing files are overwritten
-# only if their content differs, so subsequent runs see an up-to-date copy
-# without churn.
+# Write the payloads from lib/payloads/ into $CEREBRO_HOME: the opencode config
+# tree under $CEREBRO_HOME/.opencode (agents for the child roles + the
+# session-binding plugin + base config), and the editable AGENTS.md template.
+# Idempotent: managed files are overwritten only when their content differs, so
+# subsequent runs see an up-to-date copy without churn. The orchestrator and
+# observer agents are NOT written here -- they carry per-launch learned
+# preferences and are materialised by the launch path instead.
 materialise_home() {
-  mkdir -p "$CEREBRO_HOME/.claude" "$CEREBRO_HOME/sessions" \
-    "$CEREBRO_HOME/templates" \
+  mkdir -p "$CEREBRO_HOME/.opencode/agent" "$CEREBRO_HOME/.opencode/plugin" \
+    "$CEREBRO_HOME/sessions" "$CEREBRO_HOME/templates" \
     || die "cannot create $CEREBRO_HOME"
 
-  write_if_changed "$CEREBRO_HOME/system-prompt.md" "$(cerebro_system_prompt)"
-  write_if_changed "$CEREBRO_HOME/hook.sh" "$(cerebro_hook_script)"
-  chmod +x "$CEREBRO_HOME/hook.sh"
+  write_if_changed "$CEREBRO_HOME/.opencode/opencode.json" "$(cerebro_opencode_json)"
+  write_if_changed "$CEREBRO_HOME/.opencode/plugin/cerebro.js" "$(cerebro_plugin_js)"
 
-  local settings; settings="$(cerebro_settings_json "$CEREBRO_HOME/hook.sh")"
-  write_if_changed "$CEREBRO_HOME/.claude/settings.local.json" "$settings"
+  local role
+  for role in execute apply-review doc-write; do
+    write_if_changed "$CEREBRO_HOME/.opencode/agent/$(child_agent_name "$role").md" \
+      "$(child_agent_file "$role")"
+  done
+  write_if_changed "$CEREBRO_HOME/.opencode/agent/cerebro-reviewer.md" \
+    "$(reviewer_agent_file)"
 
   # Templates are user-editable defaults: write only when the file is
   # missing so a user who customizes ~/.cerebro/templates/AGENTS.md
   # isn't clobbered on the next launch.
   write_if_missing "$CEREBRO_HOME/templates/AGENTS.md" "$(cerebro_default_agents_md)"
-  write_if_missing "$CEREBRO_HOME/templates/CLAUDE.md" "$(cerebro_default_claude_md)"
 }
 
 write_if_changed() {

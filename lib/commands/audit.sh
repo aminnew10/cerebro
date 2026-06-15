@@ -4,8 +4,8 @@
 
 # ----- subcommand: cerebro audit <repo> <plan-path> [--context "..."] -------
 # The orchestrator writes plans itself (`cerebro plan`), so the external
-# check comes from a genuinely independent model: a read-only `codex exec`
-# with cwd=<repo> receives the plan, the current session spec, and any
+# check comes from a genuinely independent model: a read-only opencode reviewer
+# that receives the plan, the current session spec, and any
 # crucial context the orchestrator passes, verifies the plan against the
 # ACTUAL code, and writes its findings (ending with a PLAN AUDIT verdict
 # line) to sessions/<id>/audits/<name>.md.
@@ -39,7 +39,7 @@ cmd_audit() {
   [[ -z "$out_name" ]] && out_name="$plan_name-audit"
   out_name="${out_name%.md}"
   local out_path="$audits_dir/$out_name.md"
-  local err_path="${out_path%.md}.err"
+  local child_log="${out_path%.md}.log"
 
   # Child-session continuity is only for interrupted/incomplete audits. A
   # cleanly finished audit gets marked done; re-auditing starts fresh.
@@ -83,59 +83,49 @@ $context
 </context>"
   fi
 
-  # Run with --json so codex streams JSONL events on stdout (the only place
-  # it exposes the resumable thread_id), and -o writes the human-readable
-  # findings to out_path. codex_capture.py persists the thread_id the
-  # instant codex emits it, so an interrupt mid-run leaves a resumable
-  # record.
-  local codex_opts=(exec --json --sandbox read-only --skip-git-repo-check \
-                    --cd "$repo" -o "$out_path")
-  [[ -n "$CEREBRO_REVIEW_MODEL" ]] && codex_opts+=(--model "$CEREBRO_REVIEW_MODEL")
-  local json_path; json_path="$(mktemp)"
+  # Run the read-only reviewer agent on the independent review model
+  # (CEREBRO_REVIEW_MODEL). Its findings are its final message, which we capture
+  # and write to out_path; the JSON event stream is tee'd to child_log. The
+  # session id is persisted at startup so an interrupt stays resumable.
+  local agent; agent="$(child_agent_name audit)"
+  local rc id_capture out_capture; id_capture="$(mktemp)"; out_capture="$(mktemp)"
 
-  local rc run_args
-  if [[ -n "$prior" ]]; then
-    run_args=("${codex_opts[@]}" resume "$prior" "$audit_prompt")
-  else
-    run_args=("${codex_opts[@]}" "$audit_prompt")
-  fi
-  child_store_begin "$ckey" codex audit "$repo" "$out_name" "$out_path" "${prior:+preserve-id}"
-  env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
-    "${TIMEOUT_CMD[@]}" "$CEREBRO_CODEX_CMD" "${run_args[@]}" < /dev/null 2> "$err_path" \
-    | python3 "$CEREBRO_LIB_DIR/python/codex_capture.py" "$json_path" "$store_file" "$ckey"
-  rc=${PIPESTATUS[0]}
+  child_store_begin "$ckey" opencode audit "$repo" "$out_name" "$child_log" "${prior:+preserve-id}"
+  child_run 0 "$repo" "$audit_prompt" "$agent" "$prior" \
+    "$child_log" "$out_capture" "$id_capture" "$store_file" "$ckey" "$CEREBRO_REVIEW_MODEL"
+  rc=$?
 
-  # Stale fallback: a resume can be rejected up front because codex GC'd or
-  # no longer recognizes the stored rollout -- the run then fails before
-  # emitting any 'thread.started' event. Retry once fresh ONLY in that
-  # early-rejection case.
-  if [[ -n "$prior" ]] && (( rc != 0 )) \
-     && ! grep -q '"type":"thread.started"' "$json_path"; then
+  # Stale fallback: a resume the model no longer recognizes fails before any
+  # event (empty id capture); retry once fresh in that case only.
+  if (( rc != 0 )) && [[ -n "$prior" ]] && [[ ! -s "$id_capture" ]]; then
     log_event "audit_resume_failed" "rc=$rc resume=$prior; retrying fresh"
     warn "audit: resume of $prior failed (rc=$rc); retrying without resume"
-    : > "$json_path"
-    child_store_begin "$ckey" codex audit "$repo" "$out_name" "$out_path"
-    env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
-      "${TIMEOUT_CMD[@]}" "$CEREBRO_CODEX_CMD" "${codex_opts[@]}" "$audit_prompt" < /dev/null 2> "$err_path" \
-      | python3 "$CEREBRO_LIB_DIR/python/codex_capture.py" "$json_path" "$store_file" "$ckey"
-    rc=${PIPESTATUS[0]}
+    : > "$id_capture"
+    child_store_begin "$ckey" opencode audit "$repo" "$out_name" "$child_log"
+    child_run 0 "$repo" "$audit_prompt" "$agent" "" \
+      "$child_log" "$out_capture" "$id_capture" "$store_file" "$ckey" "$CEREBRO_REVIEW_MODEL"
+    rc=$?
   fi
 
-  # On any failure -- non-zero exit OR empty output -- preserve the err log
-  # but do NOT echo a findings path. The orchestrator must not treat a
-  # failed audit's stderr as findings.
+  # The findings are the run's closing message; write them to out_path.
+  if (( rc == 0 )) && [[ -s "$out_capture" ]]; then
+    cp "$out_capture" "$out_path"
+  fi
+  rm -f "$id_capture"
+
+  # On any failure -- non-zero exit OR empty findings -- preserve the event log
+  # but do NOT echo a findings path. The orchestrator must not treat a failed
+  # audit's output as findings.
   if (( rc != 0 )) || [[ ! -s "$out_path" ]]; then
-    rm -f "$json_path"
-    log_event "audit_failed" "rc=$rc err=$err_path out=$out_path"
-    warn "codex exited rc=$rc"
-    [[ -s "$err_path" ]] && warn "see error log: $err_path"
-    [[ -s "$out_path" ]] && warn "partial output preserved at: $out_path"
-    die "audit: codex run failed; not echoing a findings path"
+    rm -f "$out_capture"
+    log_event "audit_failed" "rc=$rc log=$child_log out=$out_path"
+    warn "audit: opencode review run failed (rc=$rc)"
+    [[ -s "$child_log" ]] && warn "see event log: $child_log"
+    die "audit: review run failed; not echoing a findings path"
   fi
 
   child_store_done "$ckey"
-  rm -f "$json_path"
-  [[ -s "$err_path" ]] || rm -f "$err_path"
+  rm -f "$out_capture"
 
   log_event "audit_written" "$out_path"
   echo "$out_path"

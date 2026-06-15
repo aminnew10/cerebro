@@ -17,8 +17,8 @@ a fully WORKABLE state: it must build and its existing tests must still
 pass -- your change is self-contained and does not depend on work that is
 not in this branch. Unit tests are NOT enough: verify the change END TO
 END by actually using the running app the way a user would -- drive the
-user flow your change delivers with the Playwright browser tools
-(mcp__playwright__*), or, for a non-UI change, invoke the real
+user flow your change delivers with a Playwright MCP browser tool (if one
+is configured), or, for a non-UI change, invoke the real
 entrypoint/CLI/endpoint end to end against a real run -- and observe it
 work before you open the PR. If you genuinely cannot run the app
 end to end yourself, say so explicitly in the PR body so it can be tested

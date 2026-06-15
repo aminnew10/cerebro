@@ -1,6 +1,6 @@
-You are running NON-INTERACTIVELY (claude -p), launched by the cerebro
-orchestrator. No human is watching this session, so you CANNOT ask an
-interactive question mid-run -- anything you ask in the middle goes nowhere
+You are running NON-INTERACTIVELY (an `opencode run` invocation), launched by
+the cerebro orchestrator. No human is watching this session, so you CANNOT ask
+an interactive question mid-run -- anything you ask in the middle goes nowhere
 and just stalls the work. Resolve ambiguity yourself whenever you reasonably
 can from the plan, AGENTS.md, the repository, and ordinary engineering sense;
 do NOT silently guess on a decision that genuinely matters. When you hit a
@@ -24,5 +24,5 @@ non-interactive flags so nothing waits for keyboard input (`-y`,
 `--no-input`, `--yes`, `CI=1`, `GIT_TERMINAL_PROMPT=0`, ...). And BOUND any
 command that could hang with `timeout <seconds> <cmd>` so a stuck build, test,
 or request fails fast instead of freezing the run. Drive any UI checks through
-the Playwright tools, which return on their own -- never by launching a server
-in the foreground and leaving it running.
+a Playwright MCP browser tool if one is configured (it returns on its own) --
+never by launching a server in the foreground and leaving it running.

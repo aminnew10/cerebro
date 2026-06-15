@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # cerebro - meta-harness CLI for the plan -> execute -> review loop.
 #
-# `cerebro` launches a native interactive `claude` session as the
-# orchestrator. The orchestrator has a restricted tool surface --
-# Read/Grep/Glob plus Bash limited to `cerebro:*` -- and a system
-# prompt that catalogues the cerebro sub-commands. The user talks only
-# to the orchestrator; the orchestrator spawns short-lived sub-agents
-# (`claude -p` for code work, `codex exec` for review) via those
-# sub-commands.
+# `cerebro` launches a native interactive `opencode` session as the
+# orchestrator. The orchestrator runs as a restricted opencode agent --
+# read/grep/glob plus Bash limited to `cerebro ...`, no edit/write/task --
+# and a system prompt that catalogues the cerebro sub-commands. The user
+# talks only to the orchestrator; the orchestrator spawns short-lived
+# sub-agents (`opencode run` on Claude Opus for code work, `opencode run`
+# on GPT-5.5 for read-only review) via those sub-commands.
 #
 # This file is a thin entry point: it resolves its own location (even
 # when invoked through a symlink on PATH), sources the modular library
@@ -18,19 +18,21 @@
 #
 # Top-level invocations the user types at a shell:
 #   cerebro                       # mint a new session, drop into the chat
-#   cerebro --resume [<id>]       # resume a session (id, or picker if omitted)
+#   cerebro --resume [<id>]       # resume a session (id, or most recent)
 #   cerebro list                  # list sessions, newest first
 #
-# Required: claude, codex, jq, python3 on PATH. Child claudes additionally
-# need git and gh for execute / apply-review / doc-write to function.
+# Required: opencode, jq, python3 on PATH. Child opencode runs
+# additionally need git and gh for execute / apply-review / doc-write.
 #
 # Env:
 #   CEREBRO_HOME          base dir (default: $HOME/.cerebro)
-#   CEREBRO_MODEL         model alias for child `claude -p` (default: unset)
-#   CEREBRO_REVIEW_MODEL  model alias for `codex exec` (default: unset)
+#   CEREBRO_MODEL         provider/model for the orchestrator + editing children
+#                         (default: github-copilot/claude-opus-4.8)
+#   CEREBRO_REVIEW_MODEL  provider/model for the read-only reviewer/auditor
+#                         (default: github-copilot/gpt-5.5)
 #   CEREBRO_TIMEOUT       seconds for child agent calls; 0/empty/none/
 #                         unlimited = no cap (default: 0, no cap)
-#   CEREBRO_CODEX_CMD     codex executable (default: codex)
+#   CEREBRO_OPENCODE_CMD  opencode executable (default: opencode)
 #   CEREBRO_CHILD_SESSION_TTL
 #                         seconds a stored child session id stays resumable
 #                         before it is treated as stale (default: 86400, 24h)
@@ -57,6 +59,7 @@ unset _cerebro_src _cerebro_dir _cerebro_bin_dir
 . "$CEREBRO_LIB_DIR/helpers.sh"
 . "$CEREBRO_LIB_DIR/payloads.sh"
 . "$CEREBRO_LIB_DIR/session-store.sh"
+. "$CEREBRO_LIB_DIR/backend.sh"
 . "$CEREBRO_LIB_DIR/pair.sh"
 for _cerebro_cmd in "$CEREBRO_LIB_DIR"/commands/*.sh; do
   . "$_cerebro_cmd"

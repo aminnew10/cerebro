@@ -1,7 +1,9 @@
 # Session table for `cerebro list`: argv[1] is the sessions root. Sorts by
-# metadata.last_touched, newest first.
+# metadata.last_touched, newest first. With `--most-recent`, prints only the id
+# of the newest session (used by bare `cerebro --resume`).
 import json, os, sys
 root = sys.argv[1]
+most_recent = "--most-recent" in sys.argv[2:]
 rows = []
 for name in os.listdir(root):
     sess = os.path.join(root, name)
@@ -16,6 +18,10 @@ for name in os.listdir(root):
             pass
     rows.append((touched, name, created))
 rows.sort(reverse=True)
+if most_recent:
+    if rows:
+        print(rows[0][1])
+    sys.exit(0)
 if not rows:
     print("cerebro: no sessions yet")
 else:

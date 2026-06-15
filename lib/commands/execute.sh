@@ -58,8 +58,6 @@ cmd_execute() {
 
   local child_log; child_log="$(child_log_path execute)"
 
-  local sys_prompt; sys_prompt="$(child_sys_prompt execute)"
-
   # Stacked-branch support. --base pins the branch this PR forks from and
   # targets (so a suite of plans can stack: plan 1 off main, plan 2 off
   # plan 1's branch, ...); --branch pins the new branch's name so the
@@ -119,35 +117,27 @@ cmd_execute() {
   [[ -n "$base_ref" ]] || base_ref="main"
   execute_worktree_create "$repo" "$wt" "$base_ref"
 
-  local opts=(-p --permission-mode bypassPermissions
-              --allowedTools "$(child_allowed_tools execute)"
-              --output-format stream-json --verbose
-              --append-system-prompt "$sys_prompt")
-  [[ -n "$CEREBRO_MODEL" ]] && opts+=(--model "$CEREBRO_MODEL")
+  local agent; agent="$(child_agent_name execute)"
 
-  # Bootstrap files: cerebro ships defaults at
-  # $CEREBRO_HOME/templates/{AGENTS.md,CLAUDE.md}. We hand them to the
-  # child claude along with an instruction to create them in the repo
-  # only when missing; existing files are left alone. The user can edit
-  # the template files to customize what new repos get.
-  local agents_template="" claude_template=""
+  # Bootstrap files: cerebro ships a default at
+  # $CEREBRO_HOME/templates/AGENTS.md. We hand it to the child opencode
+  # along with an instruction to create it in the repo only when missing;
+  # an existing file is left alone. The user can edit the template to
+  # customize what new repos get. opencode reads AGENTS.md as its rules
+  # file, so a single AGENTS.md serves both cerebro and opencode.
+  local agents_template=""
   if [[ -r "$CEREBRO_HOME/templates/AGENTS.md" ]]; then
     agents_template="$(cat "$CEREBRO_HOME/templates/AGENTS.md")"
-  fi
-  if [[ -r "$CEREBRO_HOME/templates/CLAUDE.md" ]]; then
-    claude_template="$(cat "$CEREBRO_HOME/templates/CLAUDE.md")"
   fi
 
   local child_prompt
   child_prompt="$(
     printf 'Execute the following plan in this repository. Fetch the base branch first, branch from the freshly-fetched base, implement, commit, push, and open a PR via gh.\n\n'
-    printf 'Before implementing the plan, ensure the repo has AGENTS.md and CLAUDE.md at the root:\n'
+    printf 'Before implementing the plan, ensure the repo has AGENTS.md at the root:\n'
     printf '  * If AGENTS.md is missing, create it from <bootstrap-agents-md> below as a SEPARATE first commit (e.g. "chore: add AGENTS.md") before doing the plan work.\n'
-    printf '  * If CLAUDE.md is missing, create it from <bootstrap-claude-md> in the same first commit.\n'
-    printf '  * If either file already exists, do NOT modify it.\n'
+    printf '  * If AGENTS.md already exists, do NOT modify it.\n'
     printf 'Then read AGENTS.md (existing or just-written) and follow its branch/commit rules for the rest of this run.\n\n'
     printf '<bootstrap-agents-md>\n%s\n</bootstrap-agents-md>\n\n' "$agents_template"
-    printf '<bootstrap-claude-md>\n%s\n</bootstrap-claude-md>\n\n' "$claude_template"
     [[ -n "$branch_instr" ]] && printf '%s\n\n' "$branch_instr"
     printf '<plan>\n%s\n</plan>\n' "$plan_body"
   )"
@@ -155,25 +145,16 @@ cmd_execute() {
   local rc id_capture msg_capture
   id_capture="$(mktemp)"
   msg_capture="$(mktemp)"
-  local PAIR_SID="" PAIR_OPTS=() PAIR_FIFO="" PAIR_STEER="" PAIR_IDLE="" \
-        PAIR_PGID="" PAIR_STALL="" PAIR_STALL_BUSY="" PAIR_LAUNCH=()
+  local PAIR_SID="" PAIR_FIFO="" PAIR_STEER="" PAIR_IDLE="" PAIR_STALL="" PAIR_STALL_BUSY="" PAIR_PORT="" PAIR_SERVE_PID="" PAIR_BASE_URL=""
   (( pair )) && pair_begin execute "$repo" "$new_branch" "$child_log" "$prior"
 
   local stall_n=0
   while :; do
-    local run_opts=("${opts[@]}")
-    [[ -n "$prior" ]] && run_opts+=(--resume "$prior")
-    (( pair )) && run_opts+=("${PAIR_OPTS[@]}")
-
     # Mark the child in-flight (preserving any prior id we are resuming) BEFORE
     # it launches, so an interrupt now leaves a resumable record.
-    child_store_begin "$ckey" claude execute "$repo" "${new_branch:-auto}" "$child_log" "${prior:+preserve-id}"
-    ( cd "$wt" && printf '%s' "$child_prompt" \
-        | pair_feed "$pair" "$PAIR_FIFO" "$PAIR_STEER" "$child_log" "$PAIR_IDLE" "$PAIR_PGID" "$PAIR_STALL" "$PAIR_STALL_BUSY" \
-        | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
-          ${PAIR_LAUNCH[@]+"${PAIR_LAUNCH[@]}"} "${TIMEOUT_CMD[@]}" claude "${run_opts[@]}" 2>/dev/null \
-        | tee "$child_log" \
-        | python3 "$CEREBRO_LIB_DIR/python/parse_stream.py" "$msg_capture" "$id_capture" "$store_file" "$ckey" )
+    child_store_begin "$ckey" opencode execute "$repo" "${new_branch:-auto}" "$child_log" "${prior:+preserve-id}"
+    child_run "$pair" "$wt" "$child_prompt" "$agent" "$prior" \
+      "$child_log" "$msg_capture" "$id_capture" "$store_file" "$ckey"
     rc=$?
     pair_cleanup "$pair"
 
@@ -183,18 +164,10 @@ cmd_execute() {
       log_event "execute_resume_failed" "rc=$rc resume=$prior; retrying fresh"
       warn "execute: resume of $prior failed (rc=$rc); retrying without resume"
       : > "$id_capture"
-      local retry_opts=("${opts[@]}")
-      if (( pair )); then
-        pair_begin execute "$repo" "$new_branch" "$child_log" ""
-        retry_opts+=("${PAIR_OPTS[@]}")
-      fi
-      child_store_begin "$ckey" claude execute "$repo" "${new_branch:-auto}" "$child_log"
-      ( cd "$wt" && printf '%s' "$child_prompt" \
-          | pair_feed "$pair" "$PAIR_FIFO" "$PAIR_STEER" "$child_log" "$PAIR_IDLE" "$PAIR_PGID" "$PAIR_STALL" "$PAIR_STALL_BUSY" \
-          | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
-            ${PAIR_LAUNCH[@]+"${PAIR_LAUNCH[@]}"} "${TIMEOUT_CMD[@]}" claude "${retry_opts[@]}" 2>/dev/null \
-          | tee "$child_log" \
-          | python3 "$CEREBRO_LIB_DIR/python/parse_stream.py" "$msg_capture" "$id_capture" "$store_file" "$ckey" )
+      (( pair )) && pair_begin execute "$repo" "$new_branch" "$child_log" ""
+      child_store_begin "$ckey" opencode execute "$repo" "${new_branch:-auto}" "$child_log"
+      child_run "$pair" "$wt" "$child_prompt" "$agent" "" \
+        "$child_log" "$msg_capture" "$id_capture" "$store_file" "$ckey"
       rc=$?
       pair_cleanup "$pair"
     fi
@@ -255,7 +228,7 @@ cmd_execute() {
   if (( rc != 0 )); then
     rm -f "$id_capture" "$msg_capture"
     log_event "execute_failed" "rc=$rc log=$child_log"
-    die "execute: child claude failed (rc=$rc); see $child_log"
+    die "execute: child opencode run failed (rc=$rc); see $child_log"
   fi
 
   # The child's provider id was already persisted at startup (see

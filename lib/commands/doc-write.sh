@@ -52,7 +52,7 @@ cmd_doc_write() {
 
   local child_log; child_log="$(child_log_path doc-write)"
 
-  local sys_prompt; sys_prompt="$(child_sys_prompt doc-write)"
+  local agent; agent="$(child_agent_name doc-write)"
 
   # Child-session continuity is only for interrupted/incomplete doc writes. A
   # completed doc child must not be reused as the context for a later one.
@@ -69,14 +69,7 @@ cmd_doc_write() {
   say "cerebro: updating docs in $repo"
   log_event "doc_write_started" "$source_desc resume=${prior:-none}"
 
-  local opts=(-p --permission-mode bypassPermissions
-              --allowedTools "$(child_allowed_tools doc-write)"
-              --output-format stream-json --verbose
-              --append-system-prompt "$sys_prompt")
-  [[ -n "$CEREBRO_MODEL" ]] && opts+=(--model "$CEREBRO_MODEL")
-
-  local PAIR_SID="" PAIR_OPTS=() PAIR_FIFO="" PAIR_STEER="" PAIR_IDLE="" \
-        PAIR_PGID="" PAIR_STALL="" PAIR_STALL_BUSY="" PAIR_LAUNCH=()
+  local PAIR_SID="" PAIR_FIFO="" PAIR_STEER="" PAIR_IDLE="" PAIR_STALL="" PAIR_STALL_BUSY="" PAIR_PORT="" PAIR_SERVE_PID="" PAIR_BASE_URL=""
   (( pair )) && pair_begin doc-write "$repo" "$dw_branch" "$child_log" "$prior"
 
   local child_prompt
@@ -85,16 +78,9 @@ cmd_doc_write() {
   local rc id_capture msg_capture; id_capture="$(mktemp)"; msg_capture="$(mktemp)"
   local stall_n=0
   while :; do
-    local run_opts=("${opts[@]}")
-    [[ -n "$prior" ]] && run_opts+=(--resume "$prior")
-    (( pair )) && run_opts+=("${PAIR_OPTS[@]}")
-    child_store_begin "$ckey" claude doc-write "$repo" "${dw_branch:-default}" "$child_log" "${prior:+preserve-id}"
-    ( cd "$repo" && printf '%s' "$child_prompt" \
-        | pair_feed "$pair" "$PAIR_FIFO" "$PAIR_STEER" "$child_log" "$PAIR_IDLE" "$PAIR_PGID" "$PAIR_STALL" "$PAIR_STALL_BUSY" \
-        | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
-          ${PAIR_LAUNCH[@]+"${PAIR_LAUNCH[@]}"} "${TIMEOUT_CMD[@]}" claude "${run_opts[@]}" 2>/dev/null \
-        | tee "$child_log" \
-        | python3 "$CEREBRO_LIB_DIR/python/parse_stream.py" "$msg_capture" "$id_capture" "$store_file" "$ckey" )
+    child_store_begin "$ckey" opencode doc-write "$repo" "${dw_branch:-default}" "$child_log" "${prior:+preserve-id}"
+    child_run "$pair" "$repo" "$child_prompt" "$agent" "$prior" \
+      "$child_log" "$msg_capture" "$id_capture" "$store_file" "$ckey"
     rc=$?
     pair_cleanup "$pair"
 
@@ -104,18 +90,10 @@ cmd_doc_write() {
       log_event "doc_write_resume_failed" "rc=$rc resume=$prior; retrying fresh"
       warn "doc-write: resume of $prior failed (rc=$rc); retrying without resume"
       : > "$id_capture"
-      local retry_opts=("${opts[@]}")
-      if (( pair )); then
-        pair_begin doc-write "$repo" "$dw_branch" "$child_log" ""
-        retry_opts+=("${PAIR_OPTS[@]}")
-      fi
-      child_store_begin "$ckey" claude doc-write "$repo" "${dw_branch:-default}" "$child_log"
-      ( cd "$repo" && printf '%s' "$child_prompt" \
-          | pair_feed "$pair" "$PAIR_FIFO" "$PAIR_STEER" "$child_log" "$PAIR_IDLE" "$PAIR_PGID" "$PAIR_STALL" "$PAIR_STALL_BUSY" \
-          | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
-            ${PAIR_LAUNCH[@]+"${PAIR_LAUNCH[@]}"} "${TIMEOUT_CMD[@]}" claude "${retry_opts[@]}" 2>/dev/null \
-          | tee "$child_log" \
-          | python3 "$CEREBRO_LIB_DIR/python/parse_stream.py" "$msg_capture" "$id_capture" "$store_file" "$ckey" )
+      (( pair )) && pair_begin doc-write "$repo" "$dw_branch" "$child_log" ""
+      child_store_begin "$ckey" opencode doc-write "$repo" "${dw_branch:-default}" "$child_log"
+      child_run "$pair" "$repo" "$child_prompt" "$agent" "" \
+        "$child_log" "$msg_capture" "$id_capture" "$store_file" "$ckey"
       rc=$?
       pair_cleanup "$pair"
     fi
@@ -140,7 +118,7 @@ cmd_doc_write() {
   if (( rc != 0 )); then
     rm -f "$id_capture" "$msg_capture"
     log_event "doc_write_failed" "rc=$rc log=$child_log"
-    die "doc-write: child claude failed (rc=$rc); see $child_log"
+    die "doc-write: child opencode run failed (rc=$rc); see $child_log"
   fi
   child_store_done "$ckey"
   local child_id; child_id="$(cat "$id_capture" 2>/dev/null || true)"

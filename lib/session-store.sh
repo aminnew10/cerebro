@@ -7,7 +7,7 @@
 write_metadata_new() {
   local sess_dir="$1" sid="$2" ts="$3"
   jq -n --arg sid "$sid" --arg ts "$ts" \
-    '{claude_session_id:$sid, created_at:$ts, last_touched:$ts}' \
+    '{cerebro_session_id:$sid, opencode_session_id:"", created_at:$ts, last_touched:$ts}' \
     > "$sess_dir/metadata.json"
 }
 

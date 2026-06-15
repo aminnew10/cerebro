@@ -54,7 +54,7 @@ cmd_status() {
   fi
   echo
   local last_review
-  last_review="$(ls -1t "$CEREBRO_SESSION_DIR"/children/codex-*.md 2>/dev/null | head -1)"
+  last_review="$(ls -1t "$CEREBRO_SESSION_DIR"/children/review-*.md 2>/dev/null | head -1)"
   if [[ -n "$last_review" ]]; then
     echo "last review: $last_review"
   else

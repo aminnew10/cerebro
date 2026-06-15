@@ -34,13 +34,15 @@ the entry point.
 bin/cerebro            # entry point: locate lib, source modules, dispatch
 lib/config.sh          # shell options + CEREBRO_* env defaults (sourced first)
 lib/helpers.sh         # say/warn/die, exit-code helpers, path + repo resolution, usage
-lib/payloads.sh        # thin loaders for the payload files under lib/payloads/
-lib/payloads/          # hook script, settings.json template, system prompt,
-                       #   child role prompts, default AGENTS.md / CLAUDE.md
+lib/payloads.sh        # loaders + generators for the payloads under lib/payloads/
+lib/payloads/          # opencode agent generators, session-binding plugin,
+                       #   opencode.json, system prompt, child role prompts,
+                       #   default AGENTS.md template
 lib/session-store.sh   # session metadata + child-agent session store
+lib/backend.sh         # the opencode-run seam: how a child is launched + parsed
 lib/python/            # python helpers (child-session store, stream parsing,
-                       #   pair/observe/steer pumps, path resolution)
-lib/pair.sh            # pair-programming mode (watch + steer a live child)
+                       #   pair/observe/steer pumps, serve control, path resolution)
+lib/pair.sh            # pair mode (watch + steer a child under `opencode serve`)
 lib/commands/*.sh      # one file per subcommand group (plan, execute, review, ...)
 lib/main.sh            # dispatch table mapping argv[0] to a cmd_* function
 tests/run.sh           # plain-bash test suite for the read-only bridges

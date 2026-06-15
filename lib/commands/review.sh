@@ -23,8 +23,8 @@ cmd_review() {
   [[ "$repo" = /* ]] || die "review: repo path must be absolute: $repo"
   [[ -d "$repo" ]] || die "review: repo not a directory: $repo"
 
-  # --criteria-file points at the plan whose acceptance criteria codex must
-  # check the change against. Validate it up front (before any git/codex
+  # --criteria-file points at the plan whose acceptance criteria the reviewer must
+  # check the change against. Validate it up front (before any git/review
   # work) so a typo fails fast rather than after a full review.
   local criteria_block=""
   if [[ -n "$criteria_file" ]]; then
@@ -35,7 +35,7 @@ cmd_review() {
 
   # Canonical worktree root keys the per-repo review-state file so
   # re-reviews diff against the previously-reviewed commit instead of
-  # main/origin (otherwise codex would re-evaluate the entire PR diff
+  # main/origin (otherwise the reviewer would re-evaluate the entire PR diff
   # every time apply-review made new commits).
   local canonical_repo
   canonical_repo="$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null)" \
@@ -48,7 +48,7 @@ cmd_review() {
 
   # Child-session continuity is only for interrupted/incomplete reviews. A
   # cleanly finished review gets marked done, so a later review starts a fresh
-  # codex thread instead of inheriting stale reviewer context.
+  # reviewer session instead of inheriting stale reviewer context.
   local store_file; store_file="$(child_sessions_file)"
   local ckey="" prior="" review_branch
   review_branch="$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null)"
@@ -65,7 +65,7 @@ cmd_review() {
   local using_review_state="false"
 
   # If the orchestrator did not pin --base, prefer the previously-reviewed
-  # commit so codex only inspects what changed since the last review.
+  # commit so the reviewer only inspects what changed since the last review.
   # Preconditions guard against stale state after rebases / branch
   # switches: the recorded SHA must still parse, still be an ancestor of
   # HEAD, and the branch name must match.
@@ -123,104 +123,81 @@ cmd_review() {
   merge_base="$(git -C "$repo" merge-base HEAD "$base_ref" 2>/dev/null)" \
     || die "review: failed to determine merge base against '$base_ref'"
 
-  # Uniquify the findings filename like child_log_path does. ts_compact() is
-  # second-resolution, so two parallel reviews started in the same second
-  # would otherwise clobber each other's findings. Append the repo basename
-  # (human-readable) plus PID and a random token for collision resistance.
-  local out_path="$CEREBRO_SESSION_DIR/children/codex-$(ts_compact)-$(basename "$repo")-$$-${RANDOM}.md"
-  local err_path="${out_path%.md}.err"
+  # Uniquify the findings filename. ts_compact() is second-resolution, so two
+  # parallel reviews started in the same second would otherwise clobber each
+  # other's findings. Append the repo basename plus PID and a random token.
+  local out_path="$CEREBRO_SESSION_DIR/children/review-$(ts_compact)-$(basename "$repo")-$$-${RANDOM}.md"
+  local child_log="${out_path%.md}.log"
 
   say "cerebro: reviewing $repo against $base_description (merge-base $merge_base)"
   log_event "review_started" "repo=$repo base=$base_ref merge_base=$merge_base resume=${prior:-none}"
 
-  # Short, focused prompt borrowed from aminmarashi/dev-tools `review`. We give
-  # codex the merge base directly so it runs the right `git diff` itself
-  # instead of guessing or pre-loading a huge patch into context.
-  local codex_prompt
-  codex_prompt="$(cerebro_codex_readonly_note)
+  # Short, focused prompt. We give the reviewer the merge base directly so it
+  # runs the right `git diff` itself instead of pre-loading a huge patch. The
+  # read-only constraints live in the reviewer agent, not the prompt.
+  local review_prompt
+  review_prompt="Review the code changes against the $base_description. The merge base commit for this comparison is $merge_base. Run \`git diff $merge_base\` to inspect the changes included since that merge base. Provide prioritized, actionable findings: bugs, regressions, security issues, missing tests, and correctness problems. Skip style nits, speculative concerns, and over-engineering suggestions (gold-plating, defensive code for cases that cannot occur, premature abstraction, or broad rewrites where a small fix would do); prefer the smallest change that resolves a real problem. For each finding, give a one-line title, the file or area affected, and a sentence explaining the concern and a suggested fix. Output Markdown only; no preamble."
 
-Review the code changes against the $base_description. The merge base commit for this comparison is $merge_base. Run \`git diff $merge_base\` to inspect the changes included since that merge base. Provide prioritized, actionable findings: bugs, regressions, security issues, missing tests, and correctness problems. Skip style nits, speculative concerns, and over-engineering suggestions (gold-plating, defensive code for cases that cannot occur, premature abstraction, or broad rewrites where a small fix would do); prefer the smallest change that resolves a real problem. For each finding, give a one-line title, the file or area affected, and a sentence explaining the concern and a suggested fix. Output Markdown only; no preamble."
-
-  # When the orchestrator supplies the plan via --criteria-file, make codex
-  # also act as the checkpoint gate: verify the change against EACH
-  # acceptance criterion and end with a single machine-readable verdict line
-  # the orchestrator keys its advance/retry decision on.
+  # When the orchestrator supplies the plan via --criteria-file, make the
+  # reviewer also act as the checkpoint gate: verify the change against EACH
+  # acceptance criterion and end with a single machine-readable verdict line the
+  # orchestrator keys its advance/retry decision on.
   if [[ -n "$criteria_block" ]]; then
-    codex_prompt+=" This change is meant to implement the plan below, which ends with an acceptance-criteria checkpoint. After your findings, add a section headed '## Acceptance criteria' that checks the actual implemented diff against EACH criterion in the plan. For code-reviewable criteria, list a verdict of MET, PARTIAL, or NOT MET with a one-line justification grounded in the diff. For criteria that require unavailable external capabilities such as Playwright/MCP browser operation, screenshots, visual/manual inspection, network access, PR/CI access, or other tools this read-only Codex child does not have, use verdict EXTERNAL and state the exact verification the orchestrator/user must perform; EXTERNAL criteria do not make the final verdict NOT MET. Do not claim you ran a browser/manual check here. Then output, as the VERY LAST line, exactly 'ACCEPTANCE CRITERIA: MET' if every code-reviewable criterion is fully and correctly met and only EXTERNAL criteria remain, otherwise exactly 'ACCEPTANCE CRITERIA: NOT MET'. Do not soften a PARTIAL or unmet code-reviewable criterion into MET. The plan follows between the markers.
+    review_prompt+=" This change is meant to implement the plan below, which ends with an acceptance-criteria checkpoint. After your findings, add a section headed '## Acceptance criteria' that checks the actual implemented diff against EACH criterion in the plan. For code-reviewable criteria, list a verdict of MET, PARTIAL, or NOT MET with a one-line justification grounded in the diff. For criteria that require unavailable external capabilities such as browser operation, screenshots, visual/manual inspection, network access, PR/CI access, or other tools this read-only reviewer does not have, use verdict EXTERNAL and state the exact verification the orchestrator/user must perform; EXTERNAL criteria do not make the final verdict NOT MET. Do not claim you ran a browser/manual check here. Then output, as the VERY LAST line, exactly 'ACCEPTANCE CRITERIA: MET' if every code-reviewable criterion is fully and correctly met and only EXTERNAL criteria remain, otherwise exactly 'ACCEPTANCE CRITERIA: NOT MET'. Do not soften a PARTIAL or unmet code-reviewable criterion into MET. The plan follows between the markers.
 <plan>
 $criteria_block
 </plan>"
   fi
 
-  # Run with --json so codex streams JSONL events on stdout (the only place it
-  # exposes the resumable thread_id), and -o writes the human-readable findings
-  # to out_path. We capture the event stream to json_path to pull thread_id out
-  # of the first 'thread.started' event.
-  local codex_opts=(exec --json --sandbox read-only --skip-git-repo-check \
-                    --cd "$repo" -o "$out_path")
-  [[ -n "$CEREBRO_REVIEW_MODEL" ]] && codex_opts+=(--model "$CEREBRO_REVIEW_MODEL")
-  local json_path; json_path="$(mktemp)"
+  # Run the read-only reviewer agent on the independent review model
+  # (CEREBRO_REVIEW_MODEL). Its findings are its final message, which we capture
+  # and write to out_path; the JSON event stream is tee'd to child_log. The
+  # session id is persisted at startup so an interrupt stays resumable.
+  local agent; agent="$(child_agent_name review)"
+  local rc id_capture out_capture; id_capture="$(mktemp)"; out_capture="$(mktemp)"
 
-  # codex options precede the optional `resume <id>` subcommand; the prompt is
-  # always the trailing positional.
-  local rc run_args
-  if [[ -n "$prior" ]]; then
-    run_args=("${codex_opts[@]}" resume "$prior" "$codex_prompt")
-  else
-    run_args=("${codex_opts[@]}" "$codex_prompt")
-  fi
-  # Mark the review in-flight (preserving any prior thread we are resuming)
-  # before it launches; codex_capture.py tees the stream to json_path AND
-  # persists the thread_id the instant codex emits it, so an interrupt mid
-  # run leaves a resumable record.
-  child_store_begin "$ckey" codex review "$repo" "${review_branch:-auto}" "$out_path" "${prior:+preserve-id}"
-  env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
-    "${TIMEOUT_CMD[@]}" "$CEREBRO_CODEX_CMD" "${run_args[@]}" < /dev/null 2> "$err_path" \
-    | python3 "$CEREBRO_LIB_DIR/python/codex_capture.py" "$json_path" "$store_file" "$ckey"
-  rc=${PIPESTATUS[0]}
+  child_store_begin "$ckey" opencode review "$repo" "${review_branch:-auto}" "$child_log" "${prior:+preserve-id}"
+  child_run 0 "$repo" "$review_prompt" "$agent" "$prior" \
+    "$child_log" "$out_capture" "$id_capture" "$store_file" "$ckey" "$CEREBRO_REVIEW_MODEL"
+  rc=$?
 
-  # Stale fallback: a resume can be rejected up front because codex GC'd or no
-  # longer recognizes the stored rollout -- the run then fails before emitting
-  # any 'thread.started' event. Retry once fresh ONLY in that early-rejection
-  # case. A resumed run that already streamed events (thread.started present)
-  # and then failed is a real failure and surfaces below; we do not re-run it.
-  if [[ -n "$prior" ]] && (( rc != 0 )) \
-     && ! grep -q '"type":"thread.started"' "$json_path"; then
+  # Stale fallback: a resume the model no longer recognizes fails before any
+  # event (empty id capture); retry once fresh in that case only.
+  if (( rc != 0 )) && [[ -n "$prior" ]] && [[ ! -s "$id_capture" ]]; then
     log_event "review_resume_failed" "rc=$rc resume=$prior; retrying fresh"
     warn "review: resume of $prior failed (rc=$rc); retrying without resume"
-    : > "$json_path"
-    child_store_begin "$ckey" codex review "$repo" "${review_branch:-auto}" "$out_path"
-    env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
-      "${TIMEOUT_CMD[@]}" "$CEREBRO_CODEX_CMD" "${codex_opts[@]}" "$codex_prompt" < /dev/null 2> "$err_path" \
-      | python3 "$CEREBRO_LIB_DIR/python/codex_capture.py" "$json_path" "$store_file" "$ckey"
-    rc=${PIPESTATUS[0]}
+    : > "$id_capture"
+    child_store_begin "$ckey" opencode review "$repo" "${review_branch:-auto}" "$child_log"
+    child_run 0 "$repo" "$review_prompt" "$agent" "" \
+      "$child_log" "$out_capture" "$id_capture" "$store_file" "$ckey" "$CEREBRO_REVIEW_MODEL"
+    rc=$?
   fi
 
-  # On any failure -- non-zero exit OR empty output -- preserve the err log
+  # The findings are the run's closing message; write them to out_path.
+  if (( rc == 0 )) && [[ -s "$out_capture" ]]; then
+    cp "$out_capture" "$out_path"
+  fi
+  rm -f "$id_capture"
+
+  # On any failure -- non-zero exit OR empty findings -- preserve the event log
   # but do NOT echo a findings path. The orchestrator must not feed a failed
-  # review's stderr into apply-review as if it were findings.
+  # review's output into apply-review as if it were findings.
   if (( rc != 0 )) || [[ ! -s "$out_path" ]]; then
-    rm -f "$json_path"
-    log_event "review_failed" "rc=$rc err=$err_path out=$out_path"
-    warn "codex exited rc=$rc"
-    [[ -s "$err_path" ]] && warn "see error log: $err_path"
-    [[ -s "$out_path" ]] && warn "partial output preserved at: $out_path"
-    die "review: codex run failed; not echoing a findings path"
+    rm -f "$out_capture"
+    log_event "review_failed" "rc=$rc log=$child_log out=$out_path"
+    warn "review: opencode review run failed (rc=$rc)"
+    [[ -s "$child_log" ]] && warn "see event log: $child_log"
+    die "review: review run failed; not echoing a findings path"
   fi
 
-  # The codex thread id was already persisted when codex_capture.py saw the
-  # first 'thread.started' event (so an interrupted review stays resumable);
-  # just mark this review cleanly finished.
+  # The review session id was already persisted at startup (so an interrupted
+  # review stays resumable); just mark this review cleanly finished.
   child_store_done "$ckey"
-  rm -f "$json_path"
+  rm -f "$out_capture"
 
-  # Codex's exit was zero and out_path has content; treat that as findings.
-  # Drop the (likely empty) err file to keep the children dir tidy.
-  [[ -s "$err_path" ]] || rm -f "$err_path"
-
-  # Record the HEAD we just reviewed. The next `cerebro review` (without
-  # --base) will diff against this SHA so codex only sees what
-  # apply-review changed, not the full PR diff again.
+  # Record the HEAD we just reviewed. The next `cerebro review` (without --base)
+  # will diff against this SHA so the reviewer only sees what apply-review
+  # changed, not the full PR diff again.
   local current_sha current_branch
   current_sha="$(git -C "$repo" rev-parse HEAD 2>/dev/null)"
   current_branch="$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null)"
@@ -336,8 +313,7 @@ cmd_apply_review() {
 
   local child_log; child_log="$(child_log_path apply-review)"
 
-  local sys_prompt
-  sys_prompt="$(child_sys_prompt apply-review)"
+  local agent; agent="$(child_agent_name apply-review)"
 
   # Child-session continuity is only for interrupted/incomplete apply-review
   # work. A completed fixer child must not be the starting context for another
@@ -360,14 +336,7 @@ cmd_apply_review() {
     log_event "apply_review_started" "prompt=inline resume=${prior:-none}"
   fi
 
-  local opts=(-p --permission-mode bypassPermissions
-              --allowedTools "$(child_allowed_tools apply-review)"
-              --output-format stream-json --verbose
-              --append-system-prompt "$sys_prompt")
-  [[ -n "$CEREBRO_MODEL" ]] && opts+=(--model "$CEREBRO_MODEL")
-
-  local PAIR_SID="" PAIR_OPTS=() PAIR_FIFO="" PAIR_STEER="" PAIR_IDLE="" \
-        PAIR_PGID="" PAIR_STALL="" PAIR_STALL_BUSY="" PAIR_LAUNCH=()
+  local PAIR_SID="" PAIR_FIFO="" PAIR_STEER="" PAIR_IDLE="" PAIR_STALL="" PAIR_STALL_BUSY="" PAIR_PORT="" PAIR_SERVE_PID="" PAIR_BASE_URL=""
   (( pair )) && pair_begin apply-review "$repo" "$ar_branch" "$child_log" "$prior"
 
   local child_prompt
@@ -384,16 +353,9 @@ cmd_apply_review() {
   local rc id_capture msg_capture; id_capture="$(mktemp)"; msg_capture="$(mktemp)"
   local stall_n=0
   while :; do
-    local run_opts=("${opts[@]}")
-    [[ -n "$prior" ]] && run_opts+=(--resume "$prior")
-    (( pair )) && run_opts+=("${PAIR_OPTS[@]}")
-    child_store_begin "$ckey" claude apply-review "$repo" "${ar_branch:-default}" "$child_log" "${prior:+preserve-id}"
-    ( cd "$repo" && printf '%s' "$child_prompt" \
-        | pair_feed "$pair" "$PAIR_FIFO" "$PAIR_STEER" "$child_log" "$PAIR_IDLE" "$PAIR_PGID" "$PAIR_STALL" "$PAIR_STALL_BUSY" \
-        | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
-          ${PAIR_LAUNCH[@]+"${PAIR_LAUNCH[@]}"} "${TIMEOUT_CMD[@]}" claude "${run_opts[@]}" 2>/dev/null \
-        | tee "$child_log" \
-        | python3 "$CEREBRO_LIB_DIR/python/parse_stream.py" "$msg_capture" "$id_capture" "$store_file" "$ckey" )
+    child_store_begin "$ckey" opencode apply-review "$repo" "${ar_branch:-default}" "$child_log" "${prior:+preserve-id}"
+    child_run "$pair" "$repo" "$child_prompt" "$agent" "$prior" \
+      "$child_log" "$msg_capture" "$id_capture" "$store_file" "$ckey"
     rc=$?
     pair_cleanup "$pair"
 
@@ -403,18 +365,10 @@ cmd_apply_review() {
       log_event "apply_review_resume_failed" "rc=$rc resume=$prior; retrying fresh"
       warn "apply-review: resume of $prior failed (rc=$rc); retrying without resume"
       : > "$id_capture"
-      local retry_opts=("${opts[@]}")
-      if (( pair )); then
-        pair_begin apply-review "$repo" "$ar_branch" "$child_log" ""
-        retry_opts+=("${PAIR_OPTS[@]}")
-      fi
-      child_store_begin "$ckey" claude apply-review "$repo" "${ar_branch:-default}" "$child_log"
-      ( cd "$repo" && printf '%s' "$child_prompt" \
-          | pair_feed "$pair" "$PAIR_FIFO" "$PAIR_STEER" "$child_log" "$PAIR_IDLE" "$PAIR_PGID" "$PAIR_STALL" "$PAIR_STALL_BUSY" \
-          | env -u CEREBRO_SESSION_ID -u CEREBRO_SESSION_DIR \
-            ${PAIR_LAUNCH[@]+"${PAIR_LAUNCH[@]}"} "${TIMEOUT_CMD[@]}" claude "${retry_opts[@]}" 2>/dev/null \
-          | tee "$child_log" \
-          | python3 "$CEREBRO_LIB_DIR/python/parse_stream.py" "$msg_capture" "$id_capture" "$store_file" "$ckey" )
+      (( pair )) && pair_begin apply-review "$repo" "$ar_branch" "$child_log" ""
+      child_store_begin "$ckey" opencode apply-review "$repo" "${ar_branch:-default}" "$child_log"
+      child_run "$pair" "$repo" "$child_prompt" "$agent" "" \
+        "$child_log" "$msg_capture" "$id_capture" "$store_file" "$ckey"
       rc=$?
       pair_cleanup "$pair"
     fi
@@ -439,7 +393,7 @@ cmd_apply_review() {
   if (( rc != 0 )); then
     rm -f "$id_capture" "$msg_capture"
     log_event "apply_review_failed" "rc=$rc log=$child_log"
-    die "apply-review: child claude failed (rc=$rc); see $child_log"
+    die "apply-review: child opencode run failed (rc=$rc); see $child_log"
   fi
   child_store_done "$ckey"
   local child_id; child_id="$(cat "$id_capture" 2>/dev/null || true)"

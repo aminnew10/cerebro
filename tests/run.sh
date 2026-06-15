@@ -728,10 +728,9 @@ run_case 92 "ls /dev denied (security)" 6 -- "$CEREBRO_BIN" ls /dev
 
 # ========================================================================
 # apply-review default-findings and staleness validation.
-# These validation paths fire BEFORE any child claude spawn, so the
-# error cases need no claude. The happy cases install a `claude` PATH stub
-# (mirroring the gh stub above) that consumes stdin and emits one success
-# stream-json event, so apply-review completes.
+# These validation paths fire BEFORE any child spawn, so the error cases need
+# no opencode. The happy cases install an `opencode` PATH stub that emits one
+# successful `run --format json` turn, so apply-review completes.
 # ========================================================================
 
 SESS_DIR="$CEREBRO_HOME/sessions/$CEREBRO_SESSION_ID"
@@ -743,18 +742,21 @@ RKEY="$(git -C "$REPO" rev-parse --show-toplevel \
         | python3 -c 'import hashlib,sys; print(hashlib.sha1(sys.stdin.read().strip().encode()).hexdigest()[:16])')"
 BRANCH="$(git -C "$REPO" rev-parse --abbrev-ref HEAD)"
 
-# claude stub: read the piped prompt, emit one success result event, exit 0.
-CLAUDE_STUB_DIR="$WORKDIR/claude-stub"
-mkdir -p "$CLAUDE_STUB_DIR"
-cat > "$CLAUDE_STUB_DIR/claude" <<'EOF'
+# opencode stub: emit one successful `run --format json` turn, exit 0. The
+# child prompt arrives as the last positional argument (not on stdin).
+OPENCODE_STUB_DIR="$WORKDIR/opencode-stub"
+mkdir -p "$OPENCODE_STUB_DIR"
+cat > "$OPENCODE_STUB_DIR/opencode" <<'EOF'
 #!/usr/bin/env bash
-cat >/dev/null
-printf '%s\n' '{"type":"result","subtype":"success","result":"ok"}'
+sid="STUBSESS-1"
+printf '{"type":"step_start","sessionID":"%s","part":{"type":"step-start"}}\n' "$sid"
+printf '{"type":"text","sessionID":"%s","part":{"type":"text","text":"ok"}}\n' "$sid"
+printf '{"type":"step_finish","sessionID":"%s","part":{"type":"step-finish","reason":"stop"}}\n' "$sid"
 exit 0
 EOF
-chmod +x "$CLAUDE_STUB_DIR/claude"
-STUB_OK=0; [[ -x "$CLAUDE_STUB_DIR/claude" ]] && STUB_OK=1
-STUB_PATH="$CLAUDE_STUB_DIR:$PATH"
+chmod +x "$OPENCODE_STUB_DIR/opencode"
+STUB_OK=0; [[ -x "$OPENCODE_STUB_DIR/opencode" ]] && STUB_OK=1
+STUB_PATH="$OPENCODE_STUB_DIR:$PATH"
 
 seed_review_state() {  # $1 = last_findings path
   mkdir -p "$RSTATE"
@@ -767,13 +769,13 @@ seed_review_state() {  # $1 = last_findings path
 
 # --- 93. apply-review with no findings defaults to last review's findings ---
 if (( STUB_OK )); then
-  printf 'review findings here\n' > "$CHILDREN/codex-TEST.md"
-  seed_review_state "$CHILDREN/codex-TEST.md"
+  printf 'review findings here\n' > "$CHILDREN/review-TEST.md"
+  seed_review_state "$CHILDREN/review-TEST.md"
   STDERR_CONTAINS="defaulting to last review findings" \
   run_case 93 "apply-review defaults to last review findings" 0 -- \
     env PATH="$STUB_PATH" "$CEREBRO_BIN" apply-review "$REPO"
 else
-  printf 'SKIP  93  apply-review default findings (claude stub unavailable)\n'
+  printf 'SKIP  93  apply-review default findings (opencode stub unavailable)\n'
 fi
 
 # --- 94. apply-review, no findings + no prior review -> clear error ---
@@ -783,7 +785,7 @@ run_case 94 "apply-review no findings, no prior review errors" 1 -- \
   "$CEREBRO_BIN" apply-review "$REPO"
 
 # --- 95. nonexistent explicit findings names the correct last-review path ---
-seed_review_state "$CHILDREN/codex-TEST.md"
+seed_review_state "$CHILDREN/review-TEST.md"
 STDERR_CONTAINS="the last review for this repo+branch is:" \
 run_case 95 "apply-review bad explicit findings names latest" 1 -- \
   "$CEREBRO_BIN" apply-review "$REPO" /no/such/findings.md
@@ -791,12 +793,12 @@ run_case 95 "apply-review bad explicit findings names latest" 1 -- \
 # --- 96. stale (older) findings warns non-fatally but still applies ---
 if (( STUB_OK )); then
   printf 'older findings\n' > "$WORKDIR/older.md"
-  seed_review_state "$CHILDREN/codex-TEST.md"   # newest != older.md
+  seed_review_state "$CHILDREN/review-TEST.md"   # newest != older.md
   STDERR_CONTAINS="not the latest review" \
   run_case 96 "apply-review stale findings warns, applies" 0 -- \
     env PATH="$STUB_PATH" "$CEREBRO_BIN" apply-review "$REPO" "$WORKDIR/older.md"
 else
-  printf 'SKIP  96  apply-review stale findings (claude stub unavailable)\n'
+  printf 'SKIP  96  apply-review stale findings (opencode stub unavailable)\n'
 fi
 
 # --- 99. regression: --notes with --prompt still rejected ---
@@ -807,32 +809,32 @@ run_case 99 "apply-review --notes + --prompt still errors" 1 -- \
 # --- 100. --prompt with NO operand is a usage error, never a findings fallback.
 # Seed a valid last review so a buggy fallback WOULD succeed; the guard must
 # still reject the empty --prompt rather than silently apply those findings.
-printf 'seeded findings\n' > "$CHILDREN/codex-TEST.md"
-seed_review_state "$CHILDREN/codex-TEST.md"
+printf 'seeded findings\n' > "$CHILDREN/review-TEST.md"
+seed_review_state "$CHILDREN/review-TEST.md"
 STDERR_CONTAINS="--prompt requires a non-empty value" \
 run_case 100 "apply-review --prompt (no value) errors, no findings fallback" 1 -- \
   "$CEREBRO_BIN" apply-review "$REPO" --prompt
 
 # --- 100b. --prompt "" (explicit empty operand) is likewise a usage error. ---
-seed_review_state "$CHILDREN/codex-TEST.md"
+seed_review_state "$CHILDREN/review-TEST.md"
 STDERR_CONTAINS="--prompt requires a non-empty value" \
 run_case 100b "apply-review --prompt '' errors, no findings fallback" 1 -- \
   "$CEREBRO_BIN" apply-review "$REPO" --prompt ""
 
 # --- 102. explicit-findings staleness check must NOT cross branches. ---
-# Seed review state on the current branch naming codex-TEST.md, then switch
+# Seed review state on the current branch naming review-TEST.md, then switch
 # to a new branch and apply a DIFFERENT (older) findings file. The stored
-# state belongs to the other branch, so cerebro must not name codex-TEST.md
+# state belongs to the other branch, so cerebro must not name review-TEST.md
 # as "latest for this repo+branch".
 if (( STUB_OK )); then
   printf 'older findings\n' > "$WORKDIR/older2.md"
-  seed_review_state "$CHILDREN/codex-TEST.md"   # state recorded for $BRANCH
+  seed_review_state "$CHILDREN/review-TEST.md"   # state recorded for $BRANCH
   git -C "$REPO" checkout -q -b other-branch
   out="$(env PATH="$STUB_PATH" "$CEREBRO_BIN" apply-review "$REPO" "$WORKDIR/older2.md" 2>"$WORKDIR/stderr")"
   rc=$?
   err="$(cat "$WORKDIR/stderr")"
   git -C "$REPO" checkout -q "$BRANCH"
-  if [[ $rc -eq 0 && "$err" != *"not the latest review"* && "$err" != *"codex-TEST.md"* ]]; then
+  if [[ $rc -eq 0 && "$err" != *"not the latest review"* && "$err" != *"review-TEST.md"* ]]; then
     printf 'PASS  102  staleness naming does not cross branches\n'; pass=$((pass + 1))
   else
     printf 'FAIL  102  staleness check crossed branches [rc=%d err=%s]\n' "$rc" "$err"
@@ -840,7 +842,7 @@ if (( STUB_OK )); then
     failures+=("102 branch-cross staleness :: rc=$rc err=$err")
   fi
 else
-  printf 'SKIP  102  apply-review branch-switch staleness (claude stub unavailable)\n'
+  printf 'SKIP  102  apply-review branch-switch staleness (opencode stub unavailable)\n'
 fi
 
 # ========================================================================
@@ -857,21 +859,23 @@ fi
 if (( STUB_OK )); then
   CONC_STUB_DIR="$WORKDIR/conc-stub"
   mkdir -p "$CONC_STUB_DIR"
-  cat > "$CONC_STUB_DIR/claude" <<'EOF'
+  cat > "$CONC_STUB_DIR/opencode" <<'EOF'
 #!/usr/bin/env bash
-# Echo back the per-run token carried in the prompt, many times over, so a
-# shared child log would visibly interleave the two runs' output.
-body="$(cat)"
+# Echo back the per-run token carried in the prompt (last positional arg), many
+# times over, so a shared child log would visibly interleave the two runs.
+body="${!#}"
 tok="$(printf '%s\n' "$body" | grep -o 'TOKEN=[A-Z]*' | head -1)"
 tok="${tok#TOKEN=}"
+sid="CONC-1"
 sleep 0.4   # widen the window so both runs write concurrently
+printf '{"type":"step_start","sessionID":"%s","part":{"type":"step-start"}}\n' "$sid"
 for i in $(seq 1 300); do
-  printf '{"type":"assistant","tok":"%s","i":%d}\n' "$tok" "$i"
+  printf '{"type":"text","sessionID":"%s","tok":"%s","part":{"type":"text","text":"%d"}}\n' "$sid" "$tok" "$i"
 done
-printf '%s\n' '{"type":"result","subtype":"success","result":"ok"}'
+printf '{"type":"step_finish","sessionID":"%s","part":{"type":"step-finish","reason":"stop"}}\n' "$sid"
 exit 0
 EOF
-  chmod +x "$CONC_STUB_DIR/claude"
+  chmod +x "$CONC_STUB_DIR/opencode"
   CONC_PATH="$CONC_STUB_DIR:$PATH"
 
   env PATH="$CONC_PATH" "$CEREBRO_BIN" apply-review "$REPO" \
@@ -914,7 +918,7 @@ EOF
     failures+=("103 concurrent child-log collision :: $conc_why")
   fi
 else
-  printf 'SKIP  103  concurrent child-log distinctness (claude stub unavailable)\n'
+  printf 'SKIP  103  concurrent child-log distinctness (opencode stub unavailable)\n'
 fi
 
 # ========================================================================
@@ -979,7 +983,7 @@ run_case 111 "execute unknown arg rejected" 1 -- "$CEREBRO_BIN" execute "$REPO" 
 
 # --- 112. execute: --base/--branch without a plan or --prompt still errors ---
 # Confirms the new flags parse but don't bypass the plan/prompt requirement,
-# and fire before any child claude is spawned.
+# and fire before any child opencode run is spawned.
 STDERR_CONTAINS="requires <plan-path> or --prompt" \
 run_case 112 "execute --base/--branch needs plan or prompt" 1 -- \
   "$CEREBRO_BIN" execute "$REPO" --base feat/step-1 --branch feat/step-2
@@ -987,12 +991,12 @@ run_case 112 "execute --base/--branch needs plan or prompt" 1 -- \
 # --- 112b. execute: identical --base and --branch is the removed existing-branch
 # invocation -- it must error (the child only ever cuts a FRESH branch, so
 # create-X-from-origin/X-and-PR-back-to-X is impossible), not silently enter
-# stacked mode. Fires before any child claude spawns. ---
+# stacked mode. Fires before any child opencode run spawns. ---
 STDERR_CONTAINS="--base and --branch must differ" \
 run_case 112b "execute identical base/branch errors" 1 -- \
   "$CEREBRO_BIN" execute "$REPO" --prompt "follow-up" --base feat/step-1 --branch feat/step-1
 
-# --- 113. review: --criteria-file missing path fails fast (before codex) ---
+# --- 113. review: --criteria-file missing path fails fast (before the reviewer) ---
 STDERR_CONTAINS="cannot read --criteria-file" \
 run_case 113 "review --criteria-file missing path" 1 -- \
   "$CEREBRO_BIN" review "$REPO" --criteria-file "$WORKDIR/no-such-plan.md"
@@ -1123,23 +1127,24 @@ else
 fi
 
 # ========================================================================
-# 125-128. Child agent session persistence. A stub claude/codex emits its
+# 125-128. Child agent session persistence. A stub opencode emits its
 # session id; cerebro stores it under child-sessions.json, does not reuse
 # completed child sessions, and resumes only entries left in status=running.
 # ========================================================================
 if (( STUB_OK )); then
-  # claude stub variant: emit an init event carrying a session_id, then a
-  # success result. Honours nothing else (ignores --resume).
-  ID_STUB_DIR="$WORKDIR/claude-id-stub"
+  # opencode stub variant: emit a first event carrying the session id, then a
+  # successful turn. Honours nothing else (ignores --session).
+  ID_STUB_DIR="$WORKDIR/opencode-id-stub"
   mkdir -p "$ID_STUB_DIR"
-  cat > "$ID_STUB_DIR/claude" <<'EOF'
+  cat > "$ID_STUB_DIR/opencode" <<'EOF'
 #!/usr/bin/env bash
-cat >/dev/null
-printf '%s\n' '{"type":"system","subtype":"init","session_id":"STUBSESSION-1111"}'
-printf '%s\n' '{"type":"result","subtype":"success","result":"ok"}'
+sid="STUBSESSION-1111"
+printf '{"type":"step_start","sessionID":"%s","part":{"type":"step-start"}}\n' "$sid"
+printf '{"type":"text","sessionID":"%s","part":{"type":"text","text":"ok"}}\n' "$sid"
+printf '{"type":"step_finish","sessionID":"%s","part":{"type":"step-finish","reason":"stop"}}\n' "$sid"
 exit 0
 EOF
-  chmod +x "$ID_STUB_DIR/claude"
+  chmod +x "$ID_STUB_DIR/opencode"
   ID_STUB_PATH="$ID_STUB_DIR:$PATH"
 
   ESESS="exec-session"; EDIR="$CEREBRO_HOME/sessions/$ESESS"
@@ -1196,15 +1201,19 @@ EOF
 
   # --- 126c. distinct --base/--branch drives STACKED-BRANCH MODE; the deleted
   # existing-branch mode wording never appears. ---
-  PROMPT_STUB_DIR="$WORKDIR/claude-prompt-stub"
+  PROMPT_STUB_DIR="$WORKDIR/opencode-prompt-stub"
   mkdir -p "$PROMPT_STUB_DIR"
-  cat > "$PROMPT_STUB_DIR/claude" <<'EOF'
+  cat > "$PROMPT_STUB_DIR/opencode" <<'EOF'
 #!/usr/bin/env bash
-cat > "$PROMPT_CAPTURE"
-printf '%s\n' '{"type":"result","subtype":"success","result":"ok"}'
+# The child prompt is the last positional arg under `opencode run`.
+printf '%s' "${!#}" > "$PROMPT_CAPTURE"
+sid="PROMPTSTUB-1"
+printf '{"type":"step_start","sessionID":"%s","part":{"type":"step-start"}}\n' "$sid"
+printf '{"type":"text","sessionID":"%s","part":{"type":"text","text":"ok"}}\n' "$sid"
+printf '{"type":"step_finish","sessionID":"%s","part":{"type":"step-finish","reason":"stop"}}\n' "$sid"
 exit 0
 EOF
-  chmod +x "$PROMPT_STUB_DIR/claude"
+  chmod +x "$PROMPT_STUB_DIR/opencode"
   PROMPT_STUB_PATH="$PROMPT_STUB_DIR:$PATH"
   PROMPT_CAPTURE="$WORKDIR/stacked-prompt.txt"
   env PATH="$PROMPT_STUB_PATH" CEREBRO_SESSION_ID="$ESESS" \
@@ -1226,22 +1235,25 @@ EOF
 
   # --- 129. stale fallback: a stored id the provider rejects retries fresh
   # (without --resume) and overwrites the store with the new id. ---
-  REJECT_STUB_DIR="$WORKDIR/claude-reject-stub"
+  REJECT_STUB_DIR="$WORKDIR/opencode-reject-stub"
   mkdir -p "$REJECT_STUB_DIR"
-  cat > "$REJECT_STUB_DIR/claude" <<'EOF'
+  cat > "$REJECT_STUB_DIR/opencode" <<'EOF'
 #!/usr/bin/env bash
-cat >/dev/null
+# A resumed run (--session present) is rejected before any event: emit nothing
+# so the id-capture stays empty and cerebro retries fresh. A fresh run emits a
+# new session id and succeeds.
 for a in "$@"; do
-  if [[ "$a" == "--resume" ]]; then
-    printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true}'
-    exit 1
+  if [[ "$a" == "--session" ]]; then
+    exit 0
   fi
 done
-printf '%s\n' '{"type":"system","subtype":"init","session_id":"FRESH-2222"}'
-printf '%s\n' '{"type":"result","subtype":"success","result":"ok"}'
+sid="FRESH-2222"
+printf '{"type":"step_start","sessionID":"%s","part":{"type":"step-start"}}\n' "$sid"
+printf '{"type":"text","sessionID":"%s","part":{"type":"text","text":"ok"}}\n' "$sid"
+printf '{"type":"step_finish","sessionID":"%s","part":{"type":"step-finish","reason":"stop"}}\n' "$sid"
 exit 0
 EOF
-  chmod +x "$REJECT_STUB_DIR/claude"
+  chmod +x "$REJECT_STUB_DIR/opencode"
   REJECT_STUB_PATH="$REJECT_STUB_DIR:$PATH"
 
   FSESS="fallback-session"; FDIR="$CEREBRO_HOME/sessions/$FSESS"
@@ -1250,7 +1262,7 @@ EOF
   # for resume. Completed entries are intentionally ignored.
   FKEY="$(printf '%s\0execute\0branch:feat/test|prompt:go' "$REPO" | shasum | cut -d' ' -f1 | cut -c1-16)"
   jq -n --arg k "$FKEY" --arg repo "$REPO" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-     '{($k): {id:"BOGUS-OLD", provider:"claude", role:"execute", repo:$repo,
+     '{($k): {id:"BOGUS-OLD", provider:"opencode", role:"execute", repo:$repo,
               branch:"feat/test", status:"running", updated_at:$ts}}' \
      > "$FDIR/child-sessions.json"
   env PATH="$REJECT_STUB_PATH" CEREBRO_SESSION_ID="$FSESS" \
@@ -1273,18 +1285,18 @@ EOF
   # startup (not on success), so the store now holds the LIVE child's id with
   # status=running -- the half-done work stays resumable on continue. ---
   WORK_COUNT="$WORKDIR/realfail-count"
-  WORK_STUB_DIR="$WORKDIR/claude-realfail-stub"
+  WORK_STUB_DIR="$WORKDIR/opencode-realfail-stub"
   mkdir -p "$WORK_STUB_DIR"
-  cat > "$WORK_STUB_DIR/claude" <<EOF
+  cat > "$WORK_STUB_DIR/opencode" <<EOF
 #!/usr/bin/env bash
-cat >/dev/null
 printf 'x' >> "$WORK_COUNT"
-printf '%s\n' '{"type":"system","subtype":"init","session_id":"WORKED-9999"}'
-printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git commit"}}]}}'
-printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true}'
-exit 1
+sid="WORKED-9999"
+printf '{"type":"step_start","sessionID":"%s","part":{"type":"step-start"}}\n' "\$sid"
+printf '{"type":"tool_use","sessionID":"%s","part":{"type":"tool","tool":"bash","callID":"c1","state":{"status":"completed","input":{"command":"git commit"},"output":"done"}}}\n' "\$sid"
+printf '{"type":"error","sessionID":"%s","error":{"name":"X","data":{"message":"boom"}}}\n' "\$sid"
+exit 0
 EOF
-  chmod +x "$WORK_STUB_DIR/claude"
+  chmod +x "$WORK_STUB_DIR/opencode"
   WORK_STUB_PATH="$WORK_STUB_DIR:$PATH"
 
   WSESS="realfail-session"; WDIR="$CEREBRO_HOME/sessions/$WSESS"
@@ -1292,7 +1304,7 @@ EOF
   # Seed a fresh running stored id so resume is attempted.
   WKEY="$(printf '%s\0execute\0branch:feat/test|prompt:go' "$REPO" | shasum | cut -d' ' -f1 | cut -c1-16)"
   jq -n --arg k "$WKEY" --arg repo "$REPO" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-     '{($k): {id:"PRIOR-1234", provider:"claude", role:"execute", repo:$repo,
+     '{($k): {id:"PRIOR-1234", provider:"opencode", role:"execute", repo:$repo,
               branch:"feat/test", status:"running", updated_at:$ts}}' \
      > "$WDIR/child-sessions.json"
   : > "$WORK_COUNT"
@@ -1344,19 +1356,20 @@ EOF
   # --- 146. a follow-up addressed by the WORKTREE path reuses it: apply-review
   # with <wt> as <repo> commits on that worktree's branch, in that same
   # worktree, and creates NO new worktree. ---
-  COMMIT_STUB_DIR="$WORKDIR/claude-commit-stub"
+  COMMIT_STUB_DIR="$WORKDIR/opencode-commit-stub"
   mkdir -p "$COMMIT_STUB_DIR"
-  cat > "$COMMIT_STUB_DIR/claude" <<'EOF'
+  cat > "$COMMIT_STUB_DIR/opencode" <<'EOF'
 #!/usr/bin/env bash
-cat >/dev/null
-printf '%s\n' '{"type":"system","subtype":"init","session_id":"COMMITSTUB-1"}'
+sid="COMMITSTUB-1"
+printf '{"type":"step_start","sessionID":"%s","part":{"type":"step-start"}}\n' "$sid"
 printf 'applied by follow-up\n' >> applied.txt
 git add applied.txt >/dev/null 2>&1
 git commit -q -m "stub follow-up commit" >/dev/null 2>&1
-printf '%s\n' '{"type":"result","subtype":"success","result":"ok"}'
+printf '{"type":"text","sessionID":"%s","part":{"type":"text","text":"ok"}}\n' "$sid"
+printf '{"type":"step_finish","sessionID":"%s","part":{"type":"step-finish","reason":"stop"}}\n' "$sid"
 exit 0
 EOF
-  chmod +x "$COMMIT_STUB_DIR/claude"
+  chmod +x "$COMMIT_STUB_DIR/opencode"
   COMMIT_STUB_PATH="$COMMIT_STUB_DIR:$PATH"
   FUSESS="followup-session"; FUDIR="$CEREBRO_HOME/sessions/$FUSESS"
   mkdir -p "$FUDIR/children"; : > "$FUDIR/transcript.jsonl"
@@ -1441,328 +1454,319 @@ EOF
     git -C "$REPO" branch -D "$b" >/dev/null 2>&1 || true
   done
 else
-  printf 'SKIP  125  execute child-session capture (claude stub unavailable)\n'
-  printf 'SKIP  125b execute resume=none log (claude stub unavailable)\n'
-  printf 'SKIP  126  same-branch execute isolation (claude stub unavailable)\n'
-  printf 'SKIP  126b completed execute no-auto-resume (claude stub unavailable)\n'
-  printf 'SKIP  126c distinct base/branch stacked-mode prompt (claude stub unavailable)\n'
-  printf 'SKIP  129  execute stale fallback (claude stub unavailable)\n'
-  printf 'SKIP  130  execute mutating-resume no-rerun (claude stub unavailable)\n'
-  printf 'SKIP  145  execute worktree isolation (claude stub unavailable)\n'
-  printf 'SKIP  146  follow-up worktree reuse (claude stub unavailable)\n'
-  printf 'SKIP  147  worktrees cleanup (claude stub unavailable)\n'
+  printf 'SKIP  125  execute child-session capture (opencode stub unavailable)\n'
+  printf 'SKIP  125b execute resume=none log (opencode stub unavailable)\n'
+  printf 'SKIP  126  same-branch execute isolation (opencode stub unavailable)\n'
+  printf 'SKIP  126b completed execute no-auto-resume (opencode stub unavailable)\n'
+  printf 'SKIP  126c distinct base/branch stacked-mode prompt (opencode stub unavailable)\n'
+  printf 'SKIP  129  execute stale fallback (opencode stub unavailable)\n'
+  printf 'SKIP  130  execute mutating-resume no-rerun (opencode stub unavailable)\n'
+  printf 'SKIP  145  execute worktree isolation (opencode stub unavailable)\n'
+  printf 'SKIP  146  follow-up worktree reuse (opencode stub unavailable)\n'
+  printf 'SKIP  147  worktrees cleanup (opencode stub unavailable)\n'
 fi
 
-# codex stub: emulate `codex exec --json` -- stream JSONL events on stdout
-# (carrying the resumable thread_id in `thread.started`) and write the findings
-# markdown to the -o file. We log argv so the resume test can assert that the
-# second review actually runs `codex exec resume <thread_id>`. The real codex
-# does NOT print a "session id:" line on stderr, so the capture must come from
-# the JSON stream.
-CODEX_STUB_DIR="$WORKDIR/codex-stub"
-mkdir -p "$CODEX_STUB_DIR"
-CODEX_ARGV_LOG="$WORKDIR/codex-argv.log"
-CX_TID="019ea5a7-e570-77d1-ac43-afd5da0f1caf"
-cat > "$CODEX_STUB_DIR/codex" <<EOF
+# opencode reviewer stub: emulate `opencode run` for the read-only reviewer --
+# log argv (to assert the agent / review model / flags + the prompt, which is
+# now the trailing positional) and emit a run-format event stream whose final
+# text is the findings (captured to the findings file). The reviewer runs on the
+# independent review model (CEREBRO_REVIEW_MODEL = gpt-5.5), not the implementer
+# model (CEREBRO_MODEL = opus).
+REVIEW_STUB_DIR="$WORKDIR/opencode-review-stub"
+mkdir -p "$REVIEW_STUB_DIR"
+REVIEW_ARGV_LOG="$WORKDIR/review-argv.log"
+RSID="REVIEWSESS-1"
+cat > "$REVIEW_STUB_DIR/opencode" <<EOF
 #!/usr/bin/env bash
-printf '%s\n' "\$*" >> "$CODEX_ARGV_LOG"
-out=""; prev=""
-for a in "\$@"; do
-  [[ "\$prev" == "-o" ]] && out="\$a"
-  prev="\$a"
-done
-printf '%s\n' '{"type":"thread.started","thread_id":"$CX_TID"}'
-printf '%s\n' '{"type":"turn.started"}'
-printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"no issues found"}}'
-printf '%s\n' '{"type":"turn.completed"}'
-[[ -n "\$out" ]] && printf 'no issues found\n' > "\$out"
+printf '%s\n' "\$*" >> "$REVIEW_ARGV_LOG"
+sid="$RSID"
+printf '{"type":"step_start","sessionID":"%s","part":{"type":"step-start"}}\n' "\$sid"
+printf '{"type":"tool_use","sessionID":"%s","part":{"type":"tool","tool":"bash","callID":"c1","state":{"status":"completed","input":{"command":"git diff"},"output":"d"}}}\n' "\$sid"
+printf '{"type":"text","sessionID":"%s","part":{"type":"text","text":"## Findings: no issues found"}}\n' "\$sid"
+printf '{"type":"step_finish","sessionID":"%s","part":{"type":"step-finish","reason":"stop"}}\n' "\$sid"
 exit 0
 EOF
-chmod +x "$CODEX_STUB_DIR/codex"
-if [[ -x "$CODEX_STUB_DIR/codex" ]]; then
-  CODEX_STUB_PATH="$CODEX_STUB_DIR:$PATH"
+chmod +x "$REVIEW_STUB_DIR/opencode"
+
+# --- 127r. the read-only reviewer agent denies edits/writes and is bash-limited
+# to inspection commands (this is what makes review genuinely read-only). ---
+reviewer_agent="$( ( CEREBRO_LIB_DIR="$here/../lib"; . "$here/../lib/config.sh"; . "$here/../lib/helpers.sh"; . "$here/../lib/payloads.sh"; reviewer_agent_file ) 2>/dev/null )"
+if [[ "$reviewer_agent" == *"edit: deny"* && "$reviewer_agent" == *"write: deny"* \
+      && "$reviewer_agent" == *"task: deny"* && "$reviewer_agent" == *'"git diff*": allow'* \
+      && "$reviewer_agent" == *"READ-ONLY reviewer"* ]]; then
+  printf 'PASS  127r  reviewer agent is read-only (edit/write/task denied, git-diff allowed)\n'; pass=$((pass + 1))
+else
+  printf 'FAIL  127r  reviewer agent not read-only\n'; fail=$((fail + 1))
+  failures+=("127r reviewer agent read-only")
+fi
+
+if [[ -x "$REVIEW_STUB_DIR/opencode" ]]; then
+  REVIEW_STUB_PATH="$REVIEW_STUB_DIR:$PATH"
   RSESS="review-session"; RDIR="$CEREBRO_HOME/sessions/$RSESS"
   mkdir -p "$RDIR/children"; : > "$RDIR/transcript.jsonl"
 
-  # --- 127. review captures the codex thread_id (from --json) under a review key ---
-  : > "$CODEX_ARGV_LOG"
-  env PATH="$CODEX_STUB_PATH" CEREBRO_SESSION_ID="$RSESS" CEREBRO_CODEX_CMD=codex \
-    "$CEREBRO_BIN" review "$REPO" >/dev/null 2>&1
-  cx_id="$(jq -r '.[] | select(.provider=="codex") | .id' "$RDIR/child-sessions.json" 2>/dev/null)"
-  if [[ "$cx_id" == "$CX_TID" ]]; then
-    printf 'PASS  127  review records codex thread_id from --json\n'; pass=$((pass + 1))
+  # --- 127. review records the opencode session id under a review key ---
+  : > "$REVIEW_ARGV_LOG"
+  rev_out="$(env PATH="$REVIEW_STUB_PATH" CEREBRO_SESSION_ID="$RSESS" \
+    "$CEREBRO_BIN" review "$REPO" 2>/dev/null)"
+  rv_id="$(jq -r '.[] | select(.provider=="opencode" and .role=="review") | .id' "$RDIR/child-sessions.json" 2>/dev/null)"
+  if [[ "$rv_id" == "$RSID" ]]; then
+    printf 'PASS  127  review records the opencode session id under a review key\n'; pass=$((pass + 1))
   else
-    printf 'FAIL  127  review did not record codex thread_id [got=%s]\n' "$cx_id"; fail=$((fail + 1))
-    failures+=("127 review capture :: got=$cx_id")
-  fi
-  # --- 127b. the first review invoked codex with --json (no stderr-id parse) ---
-  if grep -q -- '--json' "$CODEX_ARGV_LOG"; then
-    printf 'PASS  127b  first review runs codex with --json\n'; pass=$((pass + 1))
-  else
-    printf 'FAIL  127b  first review missing --json [argv=%s]\n' "$(cat "$CODEX_ARGV_LOG")"; fail=$((fail + 1))
-    failures+=("127b review --json missing")
-  fi
-  # --- 127c. review prompt tells codex the read-only child tool limits ---
-  if grep -q "No Playwright/MCP browser tools" "$CODEX_ARGV_LOG" \
-      && grep -q "Do not report a bug or failed criterion solely" "$CODEX_ARGV_LOG"; then
-    printf 'PASS  127c  review prompt includes codex tool limits\n'; pass=$((pass + 1))
-  else
-    printf 'FAIL  127c  review prompt missing tool limits [argv=%s]\n' "$(cat "$CODEX_ARGV_LOG")"; fail=$((fail + 1))
-    failures+=("127c review tool limits missing")
+    printf 'FAIL  127  review did not record the session id [got=%s]\n' "$rv_id"; fail=$((fail + 1))
+    failures+=("127 review capture :: got=$rv_id")
   fi
 
-  # --- 127d. criteria review classifies unavailable browser checks as external ---
+  # --- 127b. the review invokes opencode run on the cerebro-reviewer agent ---
+  if grep -q -- '--format json' "$REVIEW_ARGV_LOG" \
+      && grep -q -- '--agent cerebro-reviewer' "$REVIEW_ARGV_LOG"; then
+    printf 'PASS  127b  review runs opencode --agent cerebro-reviewer --format json\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  127b  review missing agent/format [argv=%s]\n' "$(cat "$REVIEW_ARGV_LOG")"; fail=$((fail + 1))
+    failures+=("127b review agent/format missing")
+  fi
+
+  # --- 127c. review runs on the INDEPENDENT review model (gpt-5.5), never the
+  # implementer's opus model -- the whole point of an independent reviewer. ---
+  if grep -q -- '--model github-copilot/gpt-5.5' "$REVIEW_ARGV_LOG" \
+      && ! grep -q 'claude-opus' "$REVIEW_ARGV_LOG"; then
+    printf 'PASS  127c  review runs on the independent gpt-5.5 reviewer model\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  127c  review not on gpt-5.5 review model [argv=%s]\n' "$(cat "$REVIEW_ARGV_LOG")"; fail=$((fail + 1))
+    failures+=("127c review model missing")
+  fi
+
+  # --- 127e. the findings are the run's final message, written to out_path ---
+  if [[ -s "$rev_out" ]] && grep -q 'no issues found' "$rev_out"; then
+    printf 'PASS  127e  review findings are the run final message (written to out_path)\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  127e  review findings not captured [out=%s]\n' "$rev_out"; fail=$((fail + 1))
+    failures+=("127e review findings capture :: out=$rev_out")
+  fi
+
+  # --- 127d. criteria review still puts the external-tool guidance in the prompt ---
   criteria_plan="$(env CEREBRO_SESSION_ID="$RSESS" \
-    "$CEREBRO_BIN" plan $'## Acceptance criteria (checkpoint)\n- Real Playwright browser check passes' --out criteria-target 2>/dev/null)"
-  : > "$CODEX_ARGV_LOG"
-  env PATH="$CODEX_STUB_PATH" CEREBRO_SESSION_ID="$RSESS" CEREBRO_CODEX_CMD=codex \
+    "$CEREBRO_BIN" plan $'## Acceptance criteria (checkpoint)\n- Real browser check passes' --out criteria-target 2>/dev/null)"
+  : > "$REVIEW_ARGV_LOG"
+  env PATH="$REVIEW_STUB_PATH" CEREBRO_SESSION_ID="$RSESS" \
     "$CEREBRO_BIN" review "$REPO" --criteria-file "$criteria_plan" >/dev/null 2>&1
-  if grep -q "use verdict EXTERNAL" "$CODEX_ARGV_LOG" \
-      && grep -q "EXTERNAL criteria do not make the final verdict NOT MET" "$CODEX_ARGV_LOG"; then
+  if grep -q "use verdict EXTERNAL" "$REVIEW_ARGV_LOG" \
+      && grep -q "EXTERNAL criteria do not make the final verdict NOT MET" "$REVIEW_ARGV_LOG"; then
     printf 'PASS  127d  criteria prompt externalizes unavailable browser checks\n'; pass=$((pass + 1))
   else
-    printf 'FAIL  127d  criteria prompt missing external-tool guidance [argv=%s]\n' "$(cat "$CODEX_ARGV_LOG")"; fail=$((fail + 1))
+    printf 'FAIL  127d  criteria prompt missing external-tool guidance [argv=%s]\n' "$(cat "$REVIEW_ARGV_LOG")"; fail=$((fail + 1))
     failures+=("127d criteria external guidance missing")
   fi
 
-  # --- 128. a second completed review does not resume the stored codex session ---
-  : > "$CODEX_ARGV_LOG"
-  env PATH="$CODEX_STUB_PATH" CEREBRO_SESSION_ID="$RSESS" CEREBRO_CODEX_CMD=codex \
+  # --- 128. a second completed review does not resume the stored review session ---
+  : > "$REVIEW_ARGV_LOG"
+  env PATH="$REVIEW_STUB_PATH" CEREBRO_SESSION_ID="$RSESS" \
     "$CEREBRO_BIN" review "$REPO" >/dev/null 2>&1
-  if ! grep -q "resume=$CX_TID" "$RDIR/transcript.jsonl"; then
-    printf 'PASS  128  completed review thread is not auto-resumed\n'; pass=$((pass + 1))
+  if ! grep -q -- "--session $RSID" "$REVIEW_ARGV_LOG" \
+     && ! grep -q "resume=$RSID" "$RDIR/transcript.jsonl"; then
+    printf 'PASS  128  completed review session is not auto-resumed\n'; pass=$((pass + 1))
   else
-    printf 'FAIL  128  completed review thread was resumed\n'; fail=$((fail + 1))
+    printf 'FAIL  128  completed review was resumed [argv=%s]\n' "$(cat "$REVIEW_ARGV_LOG")"; fail=$((fail + 1))
     failures+=("128 review completed auto-resume")
   fi
-  # --- 128b. re-review invokes codex fresh, without `exec resume <thread_id>` ---
-  if ! grep -q "resume $CX_TID" "$CODEX_ARGV_LOG"; then
-    printf 'PASS  128b re-review does not pass resume <thread_id>\n'; pass=$((pass + 1))
-  else
-    printf 'FAIL  128b re-review passed resume <thread_id> [argv=%s]\n' "$(cat "$CODEX_ARGV_LOG")"; fail=$((fail + 1))
-    failures+=("128b review resume argv present")
-  fi
-  # --- 128c. audit runs codex read-only on the plan and echoes findings ---
+
+  # --- 128c. audit runs the reviewer on the plan with plan+context, on the
+  # review model, records the session, and echoes the findings path. ---
   audit_plan="$(env CEREBRO_SESSION_ID="$RSESS" \
     "$CEREBRO_BIN" plan "# The plan: touch lib/thing.sh" --out audit-target 2>/dev/null)"
-  : > "$CODEX_ARGV_LOG"
-  audit_out="$(env PATH="$CODEX_STUB_PATH" CEREBRO_SESSION_ID="$RSESS" CEREBRO_CODEX_CMD=codex \
+  : > "$REVIEW_ARGV_LOG"
+  audit_out="$(env PATH="$REVIEW_STUB_PATH" CEREBRO_SESSION_ID="$RSESS" \
     "$CEREBRO_BIN" audit "$REPO" "$audit_plan" --context "key paths: lib/" 2>/dev/null)"
-  audit_argv="$(cat "$CODEX_ARGV_LOG")"
-  audit_id="$(jq -r '.[] | select(.provider=="codex" and .role=="audit") | .id' "$RDIR/child-sessions.json" 2>/dev/null)"
+  audit_argv="$(cat "$REVIEW_ARGV_LOG")"
+  audit_id="$(jq -r '.[] | select(.provider=="opencode" and .role=="audit") | .id' "$RDIR/child-sessions.json" 2>/dev/null)"
   if [[ "$audit_out" == "$RDIR/audits/audit-target-audit.md" && -s "$audit_out" \
-        && "$audit_argv" == *"--sandbox read-only"* \
-        && "$audit_argv" == *"No Playwright/MCP browser tools"* \
+        && "$audit_argv" == *"--agent cerebro-reviewer"* \
+        && "$audit_argv" == *"--model github-copilot/gpt-5.5"* \
         && "$audit_argv" == *"touch lib/thing.sh"* \
         && "$audit_argv" == *"key paths: lib/"* \
-        && "$audit_id" == "$CX_TID" ]]; then
-    printf 'PASS  128c  audit runs codex read-only with limits, plan+context, records thread\n'; pass=$((pass + 1))
+        && "$audit_id" == "$RSID" ]]; then
+    printf 'PASS  128c  audit runs the reviewer (gpt-5.5) with plan+context, records session\n'; pass=$((pass + 1))
   else
-    printf 'FAIL  128c  audit codex run wrong [out=%s id=%s]\n' "$audit_out" "$audit_id"; fail=$((fail + 1))
-    failures+=("128c audit codex :: out=$audit_out id=$audit_id")
+    printf 'FAIL  128c  audit run wrong [out=%s id=%s]\n' "$audit_out" "$audit_id"; fail=$((fail + 1))
+    failures+=("128c audit :: out=$audit_out id=$audit_id")
   fi
 
-  # --- 128d. a re-audit of the same completed plan starts a fresh codex thread ---
-  : > "$CODEX_ARGV_LOG"
-  env PATH="$CODEX_STUB_PATH" CEREBRO_SESSION_ID="$RSESS" CEREBRO_CODEX_CMD=codex \
+  # --- 128d. a re-audit of the same completed plan starts a fresh session ---
+  : > "$REVIEW_ARGV_LOG"
+  env PATH="$REVIEW_STUB_PATH" CEREBRO_SESSION_ID="$RSESS" \
     "$CEREBRO_BIN" audit "$REPO" "$audit_plan" >/dev/null 2>&1
-  if ! grep -q "resume $CX_TID" "$CODEX_ARGV_LOG"; then
-    printf 'PASS  128d re-audit does not pass resume <thread_id>\n'; pass=$((pass + 1))
+  if ! grep -q -- "--session $RSID" "$REVIEW_ARGV_LOG"; then
+    printf 'PASS  128d re-audit does not resume the stored session\n'; pass=$((pass + 1))
   else
-    printf 'FAIL  128d re-audit passed resume <thread_id> [argv=%s]\n' "$(cat "$CODEX_ARGV_LOG")"; fail=$((fail + 1))
+    printf 'FAIL  128d re-audit resumed [argv=%s]\n' "$(cat "$REVIEW_ARGV_LOG")"; fail=$((fail + 1))
     failures+=("128d audit resume argv present")
   fi
-
-  # --- 128e/128f. codex children must launch with stdin from /dev/null so a
-  # never-closing parent stdin (the backgrounded/detached case) cannot wedge
-  # them on codex's "Reading additional input from stdin..." path. We feed
-  # cerebro a FIFO whose writer never sends EOF and use a stdin-CONSUMING codex
-  # stub (mimicking real codex, which appends stdin to its prompt). With the fix
-  # the stub sees /dev/null -> immediate EOF -> completes; without it the stub
-  # blocks on the FIFO and the run is killed by the deadline (rc != 0). ---
-  if command -v timeout >/dev/null 2>&1; then TO_CMD=(timeout 10)
-  elif command -v gtimeout >/dev/null 2>&1; then TO_CMD=(gtimeout 10)
-  elif command -v perl >/dev/null 2>&1; then TO_CMD=(perl -e 'alarm shift; exec @ARGV' 10)
-  else TO_CMD=(); fi
-  if (( ${#TO_CMD[@]} )); then
-    SIN_STUB_DIR="$WORKDIR/codex-stdin-stub"
-    mkdir -p "$SIN_STUB_DIR"
-    cat > "$SIN_STUB_DIR/codex" <<EOF
-#!/usr/bin/env bash
-# Emulate real codex reading stdin -- a never-closing stdin would block here.
-cat >/dev/null
-out=""; prev=""
-for a in "\$@"; do
-  [[ "\$prev" == "-o" ]] && out="\$a"
-  prev="\$a"
-done
-printf '%s\n' '{"type":"thread.started","thread_id":"$CX_TID"}'
-printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"no issues found"}}'
-[[ -n "\$out" ]] && printf 'no issues found\n' > "\$out"
-exit 0
-EOF
-    chmod +x "$SIN_STUB_DIR/codex"
-    SIN_STUB_PATH="$SIN_STUB_DIR:$PATH"
-
-    # audit: cerebro's stdin is a FIFO whose writer never sends EOF.
-    AUD_FIFO="$WORKDIR/codex-audit-stdin.fifo"
-    rm -f "$AUD_FIFO"; mkfifo "$AUD_FIFO"
-    sleep 30 > "$AUD_FIFO" &
-    aud_hold=$!
-    aud_rc=0
-    aud_sout="$(env PATH="$SIN_STUB_PATH" CEREBRO_SESSION_ID="$RSESS" CEREBRO_CODEX_CMD=codex \
-      "${TO_CMD[@]}" "$CEREBRO_BIN" audit "$REPO" "$audit_plan" < "$AUD_FIFO" 2>/dev/null)" || aud_rc=$?
-    kill "$aud_hold" 2>/dev/null; wait "$aud_hold" 2>/dev/null
-    rm -f "$AUD_FIFO"
-    if [[ $aud_rc -eq 0 && -n "$aud_sout" ]]; then
-      printf 'PASS  128e  audit codex child reads /dev/null, never blocks on parent stdin\n'; pass=$((pass + 1))
-    else
-      printf 'FAIL  128e  audit blocked on inherited stdin [rc=%d out=%s]\n' "$aud_rc" "$aud_sout"; fail=$((fail + 1))
-      failures+=("128e audit stdin blocked :: rc=$aud_rc")
-    fi
-
-    # review: same never-closing-stdin FIFO trick.
-    REV_FIFO="$WORKDIR/codex-review-stdin.fifo"
-    rm -f "$REV_FIFO"; mkfifo "$REV_FIFO"
-    sleep 30 > "$REV_FIFO" &
-    rev_hold=$!
-    rev_rc=0
-    env PATH="$SIN_STUB_PATH" CEREBRO_SESSION_ID="$RSESS" CEREBRO_CODEX_CMD=codex \
-      "${TO_CMD[@]}" "$CEREBRO_BIN" review "$REPO" < "$REV_FIFO" >/dev/null 2>&1 || rev_rc=$?
-    kill "$rev_hold" 2>/dev/null; wait "$rev_hold" 2>/dev/null
-    rm -f "$REV_FIFO"
-    if [[ $rev_rc -eq 0 ]]; then
-      printf 'PASS  128f  review codex child reads /dev/null, never blocks on parent stdin\n'; pass=$((pass + 1))
-    else
-      printf 'FAIL  128f  review blocked on inherited stdin [rc=%d]\n' "$rev_rc"; fail=$((fail + 1))
-      failures+=("128f review stdin blocked :: rc=$rev_rc")
-    fi
-  else
-    printf 'SKIP  128e  audit stdin-devnull (no deadline command available)\n'
-    printf 'SKIP  128f  review stdin-devnull (no deadline command available)\n'
-  fi
 else
-  printf 'SKIP  127  review codex-session capture (codex stub unavailable)\n'
-  printf 'SKIP  127b review codex --json (codex stub unavailable)\n'
-  printf 'SKIP  127c review codex tool limits (codex stub unavailable)\n'
-  printf 'SKIP  127d review external criteria guidance (codex stub unavailable)\n'
-  printf 'SKIP  128  review completed no-auto-resume (codex stub unavailable)\n'
-  printf 'SKIP  128b review fresh argv (codex stub unavailable)\n'
-  printf 'SKIP  128c audit codex run (codex stub unavailable)\n'
-  printf 'SKIP  128d audit completed no-auto-resume (codex stub unavailable)\n'
-  printf 'SKIP  128e audit stdin-devnull (codex stub unavailable)\n'
-  printf 'SKIP  128f review stdin-devnull (codex stub unavailable)\n'
+  printf 'SKIP  127  review session capture (opencode stub unavailable)\n'
+  printf 'SKIP  127b review agent/format (opencode stub unavailable)\n'
+  printf 'SKIP  127c review model (opencode stub unavailable)\n'
+  printf 'SKIP  127e review findings (opencode stub unavailable)\n'
+  printf 'SKIP  127d review external criteria guidance (opencode stub unavailable)\n'
+  printf 'SKIP  128  review completed no-auto-resume (opencode stub unavailable)\n'
+  printf 'SKIP  128c audit run (opencode stub unavailable)\n'
+  printf 'SKIP  128d audit completed no-auto-resume (opencode stub unavailable)\n'
 fi
 
 # ========================================================================
-# 131-139b. Pair-programming mode (--pair). --pair drives the child through
-# claude's stream-json INPUT: cerebro feeds the task as the first message, then
-# after each turn waits a short window for a one-shot `cerebro steer` message
-# over a named pipe, and closes stdin (so the child finishes) once a window
-# passes with no steering. A stub claude records its argv, then -- in streaming
-# mode -- emits an init + one `result` per input line it reads (each input line
-# is a turn), staying alive until stdin closes. The test runs execute --pair
-# while a background driver injects one `cerebro steer "<msg>"`. We assert that
-# --pair adds --input-format stream-json + --session-id (and NEVER
-# --remote-control), that the live steering is captured to .steering.md and
-# folded back as a PAIR STEERING block, that the banner advertises `cerebro
-# observe <session-id>` + `cerebro steer`, and that the default (no --pair) path
-# stays clean. Test 138 separately stands up a fake live paired child under a
-# target session and asserts `cerebro observe <target>`, run from a different
-# observer session, tails it and reports its activity with an active STATUS.
+# 131-139. Pair-programming mode (--pair). A paired child runs under a private
+# headless `opencode serve`; cerebro POSTs the task to a session on it, streams
+# the session's events back into the child log (in run-format), and after each
+# turn waits a short window for a one-shot `cerebro steer` over a named pipe. We
+# stand up a FAKE `opencode serve` (a tiny HTTP server) so the real pair plumbing
+# -- pair_begin, pair_pump, steer, restart, stall -- runs end to end without a
+# model. The fake server answers /global/health, POST /session, GET /event (SSE),
+# POST .../prompt_async (each prompt -> one assistant turn + session.idle), and
+# POST .../abort. A FAKE_STALL_STATE file makes the FIRST server instance freeze
+# (emit nothing) so the stall-and-restart path can be exercised; the restart's
+# fresh server then completes.
 # ========================================================================
-PAIR_ARGV_LOG="$WORKDIR/pair-argv.log"
-PAIR_STUB_DIR="$WORKDIR/claude-pair-stub"
+FAKE_SERVE_PY="$WORKDIR/fake_opencode_serve.py"
+cat > "$FAKE_SERVE_PY" <<'PYEOF'
+import json, os, time, queue
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+PORT = int(os.environ.get("FAKE_PORT", "0"))
+SID = os.environ.get("FAKE_SID", "PAIRSESS-1")
+STALL_STATE = os.environ.get("FAKE_STALL_STATE", "")
+
+turns = queue.Queue()
+stall = False
+if STALL_STATE and not os.path.exists(STALL_STATE):
+    open(STALL_STATE, "w").close()
+    stall = True
+
+
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def _send(self, code, body=b"", ctype="application/json"):
+        self.send_response(code)
+        self.send_header("content-type", ctype)
+        self.end_headers()
+        if body:
+            self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path == "/global/health":
+            self._send(200, b'{"healthy":true}')
+            return
+        if self.path == "/event":
+            self.send_response(200)
+            self.send_header("content-type", "text/event-stream")
+            self.end_headers()
+            try:
+                while True:
+                    try:
+                        turns.get(timeout=0.2)
+                    except queue.Empty:
+                        continue
+                    if stall:
+                        continue
+                    mid = "msg_%d" % int(time.time() * 1000000)
+                    evs = [
+                        {"type": "message.updated",
+                         "properties": {"sessionID": SID, "info": {"id": mid, "role": "assistant"}}},
+                        {"type": "message.part.updated",
+                         "properties": {"sessionID": SID,
+                                        "part": {"type": "text", "text": "child working", "messageID": mid}}},
+                        {"type": "session.idle", "properties": {"sessionID": SID}},
+                    ]
+                    for ev in evs:
+                        self.wfile.write(b"data: " + json.dumps(ev).encode() + b"\n\n")
+                        self.wfile.flush()
+            except Exception:
+                return
+            return
+        self._send(404)
+
+    def do_POST(self):
+        ln = int(self.headers.get("content-length", 0) or 0)
+        if ln:
+            self.rfile.read(ln)
+        if self.path == "/session":
+            self._send(200, json.dumps({"id": SID}).encode())
+            return
+        if self.path.endswith("/abort"):
+            self._send(204)
+            return
+        if "/prompt_async" in self.path:
+            turns.put(1)
+            self._send(204)
+            return
+        self._send(404)
+
+
+ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
+PYEOF
+
+PAIR_STUB_DIR="$WORKDIR/opencode-pair-stub"
 mkdir -p "$PAIR_STUB_DIR"
-cat > "$PAIR_STUB_DIR/claude" <<EOF
+cat > "$PAIR_STUB_DIR/opencode" <<EOF
 #!/usr/bin/env bash
-printf '%s\n' "\$*" >> "$PAIR_ARGV_LOG"
-sid=""; resume=""; prev=""
-for a in "\$@"; do
-  [[ "\$prev" == "--session-id" ]] && sid="\$a"
-  [[ "\$prev" == "--resume" ]] && resume="\$a"
-  prev="\$a"
-done
-[[ -n "\$sid" ]] || sid="\${resume:-STUB-NOPIN}"
-printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "\$sid"
-case "\$*" in
-  *"--input-format stream-json"*)
-    if [[ "\${PAIR_DIVERGE_ONCE:-}" == 1 && -n "\${PAIR_DIVERGE_STATE:-}" && ! -e "\$PAIR_DIVERGE_STATE" ]]; then
-      : > "\$PAIR_DIVERGE_STATE"
-      IFS= read -r _line || true
-      tid="toolu_stream_diverged"
-      evt="{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"\$tid\",\"name\":\"Bash\",\"input\":{\"command\":\"echo done\"}}]}}"
-      printf '%s\n' "\$evt"
-      dlog="\$HOME/.claude/projects/test/\$sid.jsonl"
-      mkdir -p "\$(dirname "\$dlog")"
-      printf '%s\n' "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"\$sid\"}" > "\$dlog"
-      printf '%s\n' "\$evt" >> "\$dlog"
-      printf '%s\n' "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"\$tid\",\"content\":\"done\",\"is_error\":false}]}}" >> "\$dlog"
-      while :; do sleep 1; done
-    fi
-    if [[ "\${PAIR_STALL_ONCE:-}" == 1 && -n "\${PAIR_STALL_STATE:-}" && ! -e "\$PAIR_STALL_STATE" ]]; then
-      : > "\$PAIR_STALL_STATE"
-      IFS= read -r _line || true
-      printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_stall_once","name":"Bash","input":{"command":"echo stuck"}}]}}'
-      while :; do sleep 1; done
-    fi
-    # Paired: one input line = one turn. Emit an assistant line + a result for
-    # each, staying alive until cerebro's pump closes stdin.
-    while IFS= read -r _line; do
-      printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"child working"}]}}'
-      printf '%s\n' '{"type":"result","subtype":"success","result":"ok"}'
-    done ;;
-  *)
-    cat >/dev/null
-    printf '%s\n' '{"type":"result","subtype":"success","result":"ok"}' ;;
-esac
+if [[ "\$1" == "serve" ]]; then
+  port=""; prev=""
+  for a in "\$@"; do [[ "\$prev" == "--port" ]] && port="\$a"; prev="\$a"; done
+  exec env FAKE_PORT="\$port" python3 "$FAKE_SERVE_PY"
+fi
+# Non-pair fallback (run): emit one successful turn.
+sid="STUBSESS-PAIR"
+printf '{"type":"step_start","sessionID":"%s","part":{"type":"step-start"}}\n' "\$sid"
+printf '{"type":"text","sessionID":"%s","part":{"type":"text","text":"ok"}}\n' "\$sid"
+printf '{"type":"step_finish","sessionID":"%s","part":{"type":"step-finish","reason":"stop"}}\n' "\$sid"
 exit 0
 EOF
-chmod +x "$PAIR_STUB_DIR/claude"
+chmod +x "$PAIR_STUB_DIR/opencode"
 
-if [[ -x "$PAIR_STUB_DIR/claude" ]]; then
+if [[ -x "$PAIR_STUB_DIR/opencode" ]]; then
   PAIR_STUB_PATH="$PAIR_STUB_DIR:$PATH"
   PSESS="pair-session"; PDIR="$CEREBRO_HOME/sessions/$PSESS"
   mkdir -p "$PDIR/children" "$PDIR/plans"; : > "$PDIR/transcript.jsonl"
 
-  # Background driver: wait for the child's steering pipe AND its first result
-  # (proving the pump has the pipe open), then inject one steering message with a
-  # one-shot `cerebro steer "<msg>"` (no pipe arg -- auto-discovers the single
-  # live child). Wait until the steering lands in .steering.md before returning.
+  # Background driver: wait for the child's steering pipe to appear, then inject
+  # one steering message with `cerebro steer "<msg>"` (auto-discovers the single
+  # live child), retrying until it lands in .steering.md. A steer is queued the
+  # instant it reaches the live pipe and applied at the next idle window, so we
+  # fire as soon as the pipe exists rather than racing a single short window.
   pair_drive() {
-    local steerout="$1" f="" clog sp i
-    for i in $(seq 1 400); do
+    local steerout="$1" f="" sp i j
+    for i in $(seq 1 1000); do
       f="$(ls "$PDIR"/children/*.steer.fifo 2>/dev/null | head -1)"
-      if [[ -n "$f" ]]; then
-        clog="${f%.steer.fifo}.jsonl"
-        grep -q '"type":"result"' "$clog" 2>/dev/null && break
-      fi
+      [[ -n "$f" ]] && break
       sleep 0.05
     done
     [[ -n "$f" ]] || return 0
     sp="${f%.steer.fifo}.steering.md"
-    "$CEREBRO_BIN" steer "actually use a hashmap here" >"$steerout" 2>&1
-    for i in $(seq 1 300); do grep -q 'hashmap' "$sp" 2>/dev/null && break; sleep 0.05; done
+    # Keep firing until it lands. A steer to a not-yet-live pipe is a harmless
+    # no-op; once the pump is listening the steer queues and is applied at the
+    # next idle. Re-checking before each fire bounds duplicates to the apply lag.
+    for i in $(seq 1 200); do
+      grep -q 'hashmap' "$sp" 2>/dev/null && break
+      "$CEREBRO_BIN" steer "actually use a hashmap here" >"$steerout" 2>&1
+      sleep 0.3
+    done
   }
 
   # --- 131-133b. execute --pair: live one-shot steer round trip ---
-  : > "$PAIR_ARGV_LOG"
   pair_drive "$WORKDIR/steer.out" &
   STEERER_PID=$!
-  pout="$(env PATH="$PAIR_STUB_PATH" CEREBRO_SESSION_ID="$PSESS" CEREBRO_PAIR_IDLE=5 \
+  pout="$(env PATH="$PAIR_STUB_PATH" CEREBRO_SESSION_ID="$PSESS" CEREBRO_PAIR_IDLE=10 \
     "$CEREBRO_BIN" execute "$REPO" --prompt "do the work" --pair 2>"$WORKDIR/perr")"
   prc=$?
   wait "$STEERER_PID" 2>/dev/null
-  pargv="$(cat "$PAIR_ARGV_LOG")"
   perr="$(cat "$WORKDIR/perr")"
 
-  # --- 131. execute --pair uses stream-json input + --session-id, not RC ---
-  if [[ $prc -eq 0 && "$pargv" == *"--input-format stream-json"* \
-        && "$pargv" == *"--session-id"* && "$pargv" != *"--remote-control"* ]]; then
-    printf 'PASS  131  execute --pair adds stream-json input + --session-id (no RC)\n'; pass=$((pass + 1))
+  # --- 131. execute --pair runs under serve and produces a child log ---
+  if [[ $prc -eq 0 && "$pout" == *".jsonl"* ]]; then
+    printf 'PASS  131  execute --pair runs the child under opencode serve\n'; pass=$((pass + 1))
   else
-    printf 'FAIL  131  execute --pair flags wrong [rc=%d argv=%s]\n' "$prc" "$pargv"; fail=$((fail + 1))
-    failures+=("131 execute --pair flags :: rc=$prc argv=$pargv")
+    printf 'FAIL  131  execute --pair did not complete [rc=%d out=%s err=%s]\n' "$prc" "$pout" "$perr"; fail=$((fail + 1))
+    failures+=("131 execute --pair :: rc=$prc")
   fi
 
   # --- 132. execute --pair folds the live steering into a PAIR STEERING block ---
@@ -1803,32 +1807,25 @@ if [[ -x "$PAIR_STUB_DIR/claude" ]]; then
   fi
 
   # --- 134c. execute --pair: `cerebro restart` abandons the child + reverts ---
-  # A background driver waits for the live child (its steer fifo + first result),
-  # then sends one `cerebro restart <fifo> "<diag>"`. The pump reaps the child
-  # and drops a `.restart` marker holding the diagnosis; `cerebro execute` reads
-  # that marker, reverts to a clean slate, and returns 0 with a RESTART REQUESTED
-  # block carrying the diagnosis (never a plain success child-log path). The
-  # block reproduces the diagnosis verbatim, so it proves the pump wrote the
-  # marker and execute consumed it end to end.
   RESTART_DIAG="wrong approach: rebuilt X instead of extending Y"
   restart_drive() {
-    local f="" clog i
-    for i in $(seq 1 400); do
+    local f="" i j
+    for i in $(seq 1 1000); do
       f="$(ls "$PDIR"/children/*.steer.fifo 2>/dev/null | head -1)"
-      if [[ -n "$f" ]]; then
-        clog="${f%.steer.fifo}.jsonl"
-        grep -q '"type":"result"' "$clog" 2>/dev/null && break
-      fi
+      [[ -n "$f" ]] && break
       sleep 0.05
     done
     [[ -n "$f" ]] || return 0
-    "$CEREBRO_BIN" restart "$f" "$RESTART_DIAG" >/dev/null 2>&1
+    for i in $(seq 1 200); do
+      [[ -e "${f%.steer.fifo}.restart" ]] && break
+      "$CEREBRO_BIN" restart "$f" "$RESTART_DIAG" >/dev/null 2>&1
+      sleep 0.3
+    done
   }
 
-  : > "$PAIR_ARGV_LOG"
   restart_drive &
   RESTARTER_PID=$!
-  rpout="$(env PATH="$PAIR_STUB_PATH" CEREBRO_SESSION_ID="$PSESS" CEREBRO_PAIR_IDLE=10 \
+  rpout="$(env PATH="$PAIR_STUB_PATH" CEREBRO_SESSION_ID="$PSESS" CEREBRO_PAIR_IDLE=15 \
     "$CEREBRO_BIN" execute "$REPO" --prompt "do the work to restart" --pair 2>"$WORKDIR/rperr")"
   rprc=$?
   wait "$RESTARTER_PID" 2>/dev/null
@@ -1852,11 +1849,6 @@ if [[ -x "$PAIR_STUB_DIR/claude" ]]; then
   fi
 
   # --- 134e. execute --pair restart tears down the strayed run entirely ---
-  # The child works in an ISOLATED worktree on a FRESH branch. This drives a
-  # real strayed footprint INSIDE that worktree -- a new branch with a commit --
-  # then asserts the restart deletes the local branch, removes the worktree, and
-  # attempts the remote/PR teardown (via gh), all while a pre-existing
-  # uncommitted file in the user's MAIN checkout survives untouched.
   STRAY_BR="feat/strayed-fresh-branch"
   GC_CLOSE_LOG="$WORKDIR/restart-gh-close.log"
   GC_CLOSE_DIR="$WORKDIR/restart-gh-stub"; mkdir -p "$GC_CLOSE_DIR"
@@ -1869,34 +1861,31 @@ EOF
   : > "$GC_CLOSE_LOG"
   printf 'precious main-checkout work\n' > "$REPO/RESTART-PRECIOUS.txt"
   restart_stray_drive() {
-    local f="" clog i wt
-    for i in $(seq 1 400); do
+    local f="" i j wt
+    for i in $(seq 1 1000); do
       f="$(ls "$PDIR"/children/*.steer.fifo 2>/dev/null | head -1)"
-      if [[ -n "$f" ]]; then
-        clog="${f%.steer.fifo}.jsonl"
-        grep -q '"type":"result"' "$clog" 2>/dev/null && break
-      fi
+      [[ -n "$f" ]] && break
       sleep 0.05
     done
     [[ -n "$f" ]] || return 0
-    # Find the worktree this paired execute created (the new dir vs the snapshot).
     ls -1 "$CEREBRO_HOME/worktrees" 2>/dev/null | sort > "$WORKDIR/wt-after"
     wt="$CEREBRO_HOME/worktrees/$(comm -13 "$WORKDIR/wt-before" "$WORKDIR/wt-after" | head -1)"
     printf '%s' "$wt" > "$WORKDIR/stray-wt"
-    # Simulate the strayed child's footprint: a fresh branch + a commit, INSIDE
-    # the worktree (never the user's main checkout).
     git -C "$wt" checkout -q -b "$STRAY_BR" 2>/dev/null
     printf 'strayed branch work\n' >> "$wt/a.txt"
     git -C "$wt" add a.txt 2>/dev/null
     git -C "$wt" commit -q -m "strayed work" 2>/dev/null
-    "$CEREBRO_BIN" restart "$f" "strayed onto a fresh branch" >/dev/null 2>&1
+    for i in $(seq 1 200); do
+      [[ -e "${f%.steer.fifo}.restart" ]] && break
+      "$CEREBRO_BIN" restart "$f" "strayed onto a fresh branch" >/dev/null 2>&1
+      sleep 0.3
+    done
   }
 
-  : > "$PAIR_ARGV_LOG"
   ls -1 "$CEREBRO_HOME/worktrees" 2>/dev/null | sort > "$WORKDIR/wt-before"
   restart_stray_drive &
   STRAY_PID=$!
-  env PATH="$GC_CLOSE_DIR:$PAIR_STUB_PATH" CEREBRO_SESSION_ID="$PSESS" CEREBRO_PAIR_IDLE=10 \
+  env PATH="$GC_CLOSE_DIR:$PAIR_STUB_PATH" CEREBRO_SESSION_ID="$PSESS" CEREBRO_PAIR_IDLE=15 \
     "$CEREBRO_BIN" execute "$REPO" --prompt "do the work then stray off-branch" --pair \
     >/dev/null 2>&1
   wait "$STRAY_PID" 2>/dev/null
@@ -1918,58 +1907,51 @@ EOF
       "$stray_branch_gone" "$stray_wt_gone" "$stray_main_ok" "$stray_remote_attempted" "$stray_wt"; fail=$((fail + 1))
     failures+=("134e restart teardown :: branch_gone=$stray_branch_gone wt_gone=$stray_wt_gone main_ok=$stray_main_ok")
   fi
-  # Safety net: drop the strayed branch + the main-checkout marker file.
   git -C "$REPO" branch -D "$STRAY_BR" >/dev/null 2>&1 || true
   rm -f "$REPO/RESTART-PRECIOUS.txt"
 
-  # --- 135. WITHOUT --pair, no stream-json input / session pinning / banner ---
-  : > "$PAIR_ARGV_LOG"
+  # --- 135. WITHOUT --pair, no serve / banner: the run goes through `opencode run`. ---
   env PATH="$PAIR_STUB_PATH" CEREBRO_SESSION_ID="$PSESS" \
     "$CEREBRO_BIN" execute "$REPO" --prompt "no pairing" >/dev/null 2>"$WORKDIR/nperr"
-  npargv="$(cat "$PAIR_ARGV_LOG")"
+  nprc=$?
   npperr="$(cat "$WORKDIR/nperr")"
-  if [[ "$npargv" != *"--input-format"* && "$npargv" != *"--session-id"* \
-        && "$npperr" != *"PAIR MODE"* ]]; then
-    printf 'PASS  135  default execute stays clean (no pair flags / banner)\n'; pass=$((pass + 1))
+  if [[ $nprc -eq 0 && "$npperr" != *"PAIR MODE"* ]]; then
+    printf 'PASS  135  default execute stays clean (no pair banner)\n'; pass=$((pass + 1))
   else
-    printf 'FAIL  135  default execute leaked pair flags [argv=%s]\n' "$npargv"; fail=$((fail + 1))
-    failures+=("135 default execute pair leak :: argv=$npargv")
+    printf 'FAIL  135  default execute leaked pair mode [rc=%d err=%s]\n' "$nprc" "$npperr"; fail=$((fail + 1))
+    failures+=("135 default execute pair leak :: rc=$nprc")
   fi
 
-  # --- 136. audit has no pair mode (codex has no live-steer) ---
+  # --- 136. audit has no pair mode (read-only reviewer has no live-steer) ---
   pair_plan="$(env CEREBRO_SESSION_ID="$PSESS" \
     "$CEREBRO_BIN" plan "# Add a cache" --out pair-plan 2>/dev/null)"
   qerr="$(env CEREBRO_SESSION_ID="$PSESS" \
     "$CEREBRO_BIN" audit "$REPO" "$pair_plan" --pair 2>&1 >/dev/null)"
   qrc=$?
   if [[ $qrc -ne 0 && "$qerr" == *"unknown arg: --pair"* ]]; then
-    printf 'PASS  136  audit rejects --pair (codex has no live-steer)\n'; pass=$((pass + 1))
+    printf 'PASS  136  audit rejects --pair (read-only reviewer has no live-steer)\n'; pass=$((pass + 1))
   else
     printf 'FAIL  136  audit --pair not rejected [rc=%d err=%s]\n' "$qrc" "$qerr"; fail=$((fail + 1))
     failures+=("136 audit --pair rejection :: rc=$qrc")
   fi
 
   # --- 137. apply-review --prompt --pair pairs on the current branch ---
-  : > "$PAIR_ARGV_LOG"
-  env PATH="$PAIR_STUB_PATH" CEREBRO_SESSION_ID="$PSESS" CEREBRO_PAIR_IDLE=1 \
-    "$CEREBRO_BIN" apply-review "$REPO" --prompt "tidy up" --pair >/dev/null 2>&1
+  apout="$(env PATH="$PAIR_STUB_PATH" CEREBRO_SESSION_ID="$PSESS" CEREBRO_PAIR_IDLE=2 \
+    "$CEREBRO_BIN" apply-review "$REPO" --prompt "tidy up" --pair 2>"$WORKDIR/aperr")"
   arc=$?
-  aargv="$(cat "$PAIR_ARGV_LOG")"
-  if [[ $arc -eq 0 && "$aargv" == *"--input-format stream-json"* \
-        && "$aargv" != *"--remote-control"* ]]; then
-    printf 'PASS  137  apply-review --pair pairs via stream-json input\n'; pass=$((pass + 1))
+  if [[ $arc -eq 0 && "$apout" == *".jsonl"* && "$(cat "$WORKDIR/aperr")" == *"PAIR MODE"* ]]; then
+    printf 'PASS  137  apply-review --pair runs the child under opencode serve\n'; pass=$((pass + 1))
   else
-    printf 'FAIL  137  apply-review --pair wrong [rc=%d argv=%s]\n' "$arc" "$aargv"; fail=$((fail + 1))
+    printf 'FAIL  137  apply-review --pair wrong [rc=%d out=%s]\n' "$arc" "$apout"; fail=$((fail + 1))
     failures+=("137 apply-review --pair :: rc=$arc")
   fi
 
   # --- 138. cerebro observe: from an OBSERVER session, tail a TARGET session's
-  # live paired children. Stand up a fake live paired child (a stream-json log +
-  # a steer pipe held open by a reader) under a target session, then run the real
+  # live paired children. Stand up a fake live paired child (a run-format log + a
+  # steer pipe held open by a reader) under a target session, then run the real
   # `cerebro observe <target>` from a separate observer session and assert it
   # reports the child label, its message, the edit (with content preview), and an
-  # active STATUS that names the live child. observe needs no tty, so we call the
-  # binary directly with a short window.
+  # active STATUS that names the live child. ---
   WTGT="$CEREBRO_HOME/sessions/observe-target/children"; mkdir -p "$WTGT"
   mkdir -p "$CEREBRO_HOME/sessions/observe-watcher"
   wfifo="$WTGT/execute-demo.steer.fifo"; wlog="$WTGT/execute-demo.jsonl"
@@ -1977,15 +1959,15 @@ EOF
   python3 -c 'import os,sys,time; os.open(sys.argv[1], os.O_RDONLY|os.O_NONBLOCK); time.sleep(6)' "$wfifo" &
   WHOLDER=$!; disown "$WHOLDER" 2>/dev/null || true
   {
-    printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Introducing a Cache abstraction"}]}}'
-    printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Write","input":{"file_path":"src/cache.ts","content":"export interface Cache {}"}}]}}'
-    printf '%s\n' '{"type":"result","subtype":"success"}'
+    printf '%s\n' '{"type":"text","sessionID":"OBS-1","part":{"type":"text","text":"Introducing a Cache abstraction"}}'
+    printf '%s\n' '{"type":"tool_use","sessionID":"OBS-1","part":{"type":"tool","tool":"write","state":{"input":{"filePath":"src/cache.ts","content":"export interface Cache {}"}}}}'
+    printf '%s\n' '{"type":"step_finish","sessionID":"OBS-1","part":{"type":"step-finish","reason":"stop"}}'
   } > "$wlog"
   obsout="$(CEREBRO_SESSION_ID=observe-watcher CEREBRO_OBSERVE_WINDOW=3 CEREBRO_OBSERVE_QUIET=1 \
     "$CEREBRO_BIN" observe observe-target 2>/dev/null)"
   kill "$WHOLDER" 2>/dev/null; rm -f "$wfifo"
   if [[ "$obsout" == *"execute-demo"* && "$obsout" == *"Introducing a Cache abstraction"* \
-        && "$obsout" == *"Write src/cache.ts :: export interface Cache {}"* \
+        && "$obsout" == *"write src/cache.ts :: export interface Cache {}"* \
         && "$obsout" == *"OBSERVE STATUS: active"* && "$obsout" == *"live: execute-demo"* ]]; then
     printf 'PASS  138  cerebro observe tails a target session live paired child\n'; pass=$((pass + 1))
   else
@@ -2003,10 +1985,9 @@ EOF
     failures+=("138b observe done :: out=$obsdone")
   fi
 
-  # --- 138c. observe renders TodoWrite as a `plan:` line and carries a full
-  # function body past the old 600-char clip, so the observer can narrate the
-  # roadmap and quote the actual design. Fresh target session keeps the cursor
-  # clean (138/138b advanced the watcher's cursor for observe-target). ---
+  # --- 138c. observe renders todowrite as a `plan:` line and carries a full
+  # function body past the old clip, so the observer can narrate the roadmap and
+  # quote the actual design. ---
   WTGT2="$CEREBRO_HOME/sessions/observe-target2/children"; mkdir -p "$WTGT2"
   mkdir -p "$CEREBRO_HOME/sessions/observe-watcher2"
   wfifo2="$WTGT2/execute-deep.steer.fifo"; wlog2="$WTGT2/execute-deep.jsonl"
@@ -2015,9 +1996,9 @@ EOF
   WHOLDER2=$!; disown "$WHOLDER2" 2>/dev/null || true
   longbody="$(python3 -c 'print("export function step(s){" + "/*x*/"*200 + "return s;}", end="")')"
   {
-    printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"TodoWrite","input":{"todos":[{"content":"ring rules engine","status":"completed"},{"content":"wire controller","status":"in_progress"}]}}]}}'
-    printf '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Write","input":{"file_path":"rules.js","content":%s}}]}}\n' "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$longbody")"
-    printf '%s\n' '{"type":"result","subtype":"success"}'
+    printf '%s\n' '{"type":"tool_use","sessionID":"OBS-2","part":{"type":"tool","tool":"todowrite","state":{"input":{"todos":[{"content":"ring rules engine","status":"completed"},{"content":"wire controller","status":"in_progress"}]}}}}'
+    printf '{"type":"tool_use","sessionID":"OBS-2","part":{"type":"tool","tool":"write","state":{"input":{"filePath":"rules.js","content":%s}}}}\n' "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$longbody")"
+    printf '%s\n' '{"type":"step_finish","sessionID":"OBS-2","part":{"type":"step-finish","reason":"stop"}}'
   } > "$wlog2"
   obsdeep="$(CEREBRO_SESSION_ID=observe-watcher2 CEREBRO_OBSERVE_WINDOW=3 CEREBRO_OBSERVE_QUIET=1 \
     "$CEREBRO_BIN" observe observe-target2 2>/dev/null)"
@@ -2030,22 +2011,19 @@ EOF
     failures+=("138c observe deep :: out=$obsdeep")
   fi
 
-  # --- 138d. cerebro --observe launches a watch-and-steer-only session: the
-  # observe-mode overlay is in the system prompt, the target id is pre-wired,
-  # and the tool allow-list is narrowed to observe/steer/read (no broad
-  # Bash(cerebro:*), no Edit/Write). Stub claude+codex capture argv; the launch
-  # execs claude in a subshell so the stub just logs and exits. ---
+  # --- 138d. cerebro --observe launches a watch-and-steer-only session: it execs
+  # `opencode --agent cerebro-observer --prompt "<kickoff>"`, and the generated
+  # observer agent file carries the OBSERVE MODE overlay plus a bash permission
+  # block narrowed to observe/steer (no broad cerebro, no edit/write). The stub
+  # opencode just logs argv and exits. ---
   OBS_STUB_DIR="$WORKDIR/observe-launch-stub"; mkdir -p "$OBS_STUB_DIR"
   OBS_ARGV_LOG="$WORKDIR/observe-launch-argv.log"; : > "$OBS_ARGV_LOG"
-  cat > "$OBS_STUB_DIR/claude" <<EOF
+  cat > "$OBS_STUB_DIR/opencode" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$OBS_ARGV_LOG"
 exit 0
 EOF
-  chmod +x "$OBS_STUB_DIR/claude"
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$OBS_STUB_DIR/codex"; chmod +x "$OBS_STUB_DIR/codex"
-  # --observe now blocks until the target has something observable, so give
-  # observe-target2 a live paired child for the duration of the launch.
+  chmod +x "$OBS_STUB_DIR/opencode"
   OBSD_FIFO="$CEREBRO_HOME/sessions/observe-target2/children/execute-live.steer.fifo"
   mkfifo "$OBSD_FIFO"
   python3 -c 'import os,sys,time; os.open(sys.argv[1], os.O_RDONLY|os.O_NONBLOCK); time.sleep(8)' "$OBSD_FIFO" &
@@ -2055,43 +2033,37 @@ EOF
       "$CEREBRO_BIN" --observe observe-target2 >/dev/null 2>&1 )
   kill "$OBSD_HOLDER" 2>/dev/null; rm -f "$OBSD_FIFO"
   obslaunch="$(cat "$OBS_ARGV_LOG")"
-  # The kickoff prompt must land in the positional slot, i.e. BEFORE the
-  # variadic --allowedTools (<tools...>) which would otherwise swallow it.
-  obspre="${obslaunch%%--allowedTools*}"
-  if [[ "$obslaunch" == *"OBSERVE MODE"* \
-        && "$obslaunch" == *"cerebro observe observe-target2"* \
-        && "$obspre" == *"Start observing session observe-target2 now"* \
-        && "$obslaunch" == *"Bash(cerebro observe:*)"* \
-        && "$obslaunch" == *"Bash(cerebro steer:*)"* \
-        && "$obslaunch" == *"Bash(cerebro restart:*)"* \
-        && "$obslaunch" != *"Bash(cerebro:*)"* \
-        && "$obslaunch" != *"Edit Write"* ]]; then
+  obsagent="$(cat "$CEREBRO_HOME/.opencode/agent/cerebro-observer.md" 2>/dev/null)"
+  if [[ "$obslaunch" == *"--agent cerebro-observer"* \
+        && "$obslaunch" == *"--prompt"* \
+        && "$obslaunch" == *"Start observing session observe-target2 now"* \
+        && "$obsagent" == *"OBSERVE MODE"* \
+        && "$obsagent" == *"cerebro observe"* \
+        && "$obsagent" != *"cerebro:"* ]]; then
     printf 'PASS  138d  cerebro --observe launches a watch-and-steer-only session\n'; pass=$((pass + 1))
   else
-    printf 'FAIL  138d  observe launch wrong [out=%s]\n' "$obslaunch"; fail=$((fail + 1))
-    failures+=("138d observe launch :: out=$obslaunch")
+    printf 'FAIL  138d  observe launch wrong [argv=%s]\n' "$obslaunch"; fail=$((fail + 1))
+    failures+=("138d observe launch :: argv=$obslaunch")
   fi
 
   # --- 138e. cerebro --observe blocks until something is observable: with no
-  # live paired children it must NOT exec claude yet; once a target sprouts a
-  # live child it proceeds and launches. Reuses the 138d argv-logging stub. ---
+  # live paired children it must NOT exec opencode yet; once a target sprouts a
+  # live child it proceeds and launches. ---
   mkdir -p "$CEREBRO_HOME/sessions/observe-wait-target/children"
   OBSE_ARGV_LOG="$WORKDIR/observe-wait-argv.log"; : > "$OBSE_ARGV_LOG"
   OBSE_STUB_DIR="$WORKDIR/observe-wait-stub"; mkdir -p "$OBSE_STUB_DIR"
-  cat > "$OBSE_STUB_DIR/claude" <<EOF
+  cat > "$OBSE_STUB_DIR/opencode" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "launched" >> "$OBSE_ARGV_LOG"
 exit 0
 EOF
-  chmod +x "$OBSE_STUB_DIR/claude"
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$OBSE_STUB_DIR/codex"; chmod +x "$OBSE_STUB_DIR/codex"
+  chmod +x "$OBSE_STUB_DIR/opencode"
   ( PATH="$OBSE_STUB_DIR:$PATH" CEREBRO_SESSION_ID=observe-wait-launcher \
       CEREBRO_OBSERVE_POLL=0.3 \
       "$CEREBRO_BIN" --observe observe-wait-target >/dev/null 2>&1 ) &
   OBSE_LAUNCH=$!
   sleep 1
-  obse_early="$(cat "$OBSE_ARGV_LOG")"   # should still be empty: it's waiting
-  # Now make the target observable; the waiter should proceed within a poll.
+  obse_early="$(cat "$OBSE_ARGV_LOG")"
   OBSE_FIFO="$CEREBRO_HOME/sessions/observe-wait-target/children/execute-go.steer.fifo"
   mkfifo "$OBSE_FIFO"
   python3 -c 'import os,sys,time; os.open(sys.argv[1], os.O_RDONLY|os.O_NONBLOCK); time.sleep(6)' "$OBSE_FIFO" &
@@ -2110,52 +2082,28 @@ EOF
     failures+=("138e observe wait :: early=$obse_early late=$obse_late")
   fi
 
-  # --- 139. a frozen paired child is reaped and relaunched with --resume. ---
-  : > "$PAIR_ARGV_LOG"
+  # --- 139. a frozen paired child is reaped and relaunched (stall -> restart).
+  # The FIRST fake server instance freezes (emits nothing); the pump reaps it and
+  # marks the child stalled; cerebro restarts it, and the fresh server completes. ---
   STALL_STATE="$WORKDIR/pair-stall-once.state"
   rm -f "$STALL_STATE"
   rstout="$(env PATH="$PAIR_STUB_PATH" CEREBRO_SESSION_ID="$PSESS" \
+    FAKE_STALL_STATE="$STALL_STATE" \
     CEREBRO_PAIR_IDLE=1 CEREBRO_PAIR_STALL=1 CEREBRO_PAIR_STALL_BUSY=1 \
     CEREBRO_PAIR_STALL_RETRIES=1 CEREBRO_PAIR_STALL_BACKOFF=0 \
-    PAIR_STALL_ONCE=1 PAIR_STALL_STATE="$STALL_STATE" \
     "$CEREBRO_BIN" execute "$REPO" --prompt "stall once then resume" --pair 2>"$WORKDIR/rsterr")"
   rstrc=$?
-  rstargv="$(cat "$PAIR_ARGV_LOG")"
-  if [[ $rstrc -eq 0 && "$rstargv" == *"--session-id"* && "$rstargv" == *"--resume"* \
-        && "$rstout" == *".jsonl"* ]] \
+  if [[ $rstrc -eq 0 && "$rstout" == *".jsonl"* ]] \
         && grep -q '"what":"pair_stall_restart"' "$PDIR/transcript.jsonl"; then
-    printf 'PASS  139  paired stall restarts the child with --resume\n'; pass=$((pass + 1))
+    printf 'PASS  139  paired stall reaps and restarts the child\n'; pass=$((pass + 1))
   else
-    printf 'FAIL  139  paired stall did not resume [rc=%d argv=%s out=%s err=%s]\n' \
-      "$rstrc" "$rstargv" "$rstout" "$(cat "$WORKDIR/rsterr")"; fail=$((fail + 1))
-    failures+=("139 pair stall resume :: rc=$rstrc argv=$rstargv")
-  fi
-
-  # --- 139b. a wedged stream with a durable tool_result restarts as stream_diverged. ---
-  : > "$PAIR_ARGV_LOG"
-  DIVERGE_STATE="$WORKDIR/pair-diverge-once.state"
-  DIVERGE_HOME="$WORKDIR/pair-diverge-home"
-  rm -f "$DIVERGE_STATE"; rm -rf "$DIVERGE_HOME"; mkdir -p "$DIVERGE_HOME"
-  dvstart="$(date +%s)"
-  dvout="$(env HOME="$DIVERGE_HOME" PATH="$PAIR_STUB_PATH" CEREBRO_SESSION_ID="$PSESS" \
-    CEREBRO_PAIR_IDLE=1 CEREBRO_PAIR_STALL=1 CEREBRO_PAIR_STALL_BUSY=8 \
-    CEREBRO_PAIR_STALL_RETRIES=1 CEREBRO_PAIR_STALL_BACKOFF=0 \
-    PAIR_DIVERGE_ONCE=1 PAIR_DIVERGE_STATE="$DIVERGE_STATE" \
-    "$CEREBRO_BIN" execute "$REPO" --prompt "stream wedges once then resume" --pair 2>"$WORKDIR/dverr")"
-  dvrc=$?
-  dvelapsed=$(( $(date +%s) - dvstart ))
-  dvargv="$(cat "$PAIR_ARGV_LOG")"
-  if [[ $dvrc -eq 0 && "$dvargv" == *"--resume"* && "$dvout" == *".jsonl"* \
-        && $dvelapsed -lt 6 ]]; then
-    printf 'PASS  139b paired stream divergence restarts with --resume\n'; pass=$((pass + 1))
-  else
-    printf 'FAIL  139b stream divergence did not resume fast enough [rc=%d elapsed=%s argv=%s out=%s err=%s]\n' \
-      "$dvrc" "$dvelapsed" "$dvargv" "$dvout" "$(cat "$WORKDIR/dverr")"; fail=$((fail + 1))
-    failures+=("139b pair stream divergence resume :: rc=$dvrc elapsed=$dvelapsed argv=$dvargv")
+    printf 'FAIL  139  paired stall did not restart [rc=%d out=%s err=%s]\n' \
+      "$rstrc" "$rstout" "$(cat "$WORKDIR/rsterr")"; fail=$((fail + 1))
+    failures+=("139 pair stall restart :: rc=$rstrc")
   fi
 else
-  for t in 131 132 133 133b 134 135 136 137 138 138b 139 139b; do
-    printf 'SKIP  %s  pair-mode (claude stub unavailable)\n' "$t"
+  for t in 131 132 133 133b 134 134c 134d 134e 135 136 137 138 138b 138c 138d 138e 139; do
+    printf 'SKIP  %s  pair-mode (opencode stub unavailable)\n' "$t"
   done
 fi
 
@@ -2172,7 +2120,7 @@ SSESS="status-inflight-session"; SDIR="$CEREBRO_HOME/sessions/$SSESS"
 mkdir -p "$SDIR/children"; : > "$SDIR/transcript.jsonl"
 jq -n --arg k deadbeefdeadbeef --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
    --arg repo "$REPO" \
-   '{($k): {id:"INFLIGHT-1", provider:"claude", role:"execute", repo:$repo,
+   '{($k): {id:"INFLIGHT-1", provider:"opencode", role:"execute", repo:$repo,
             branch:"feat/wip", log:"/tmp/x.jsonl", status:"running",
             started_at:$ts, updated_at:$ts}}' \
    > "$SDIR/child-sessions.json"
@@ -2188,7 +2136,7 @@ fi
 
 # --- 142. a stale (over-TTL) running entry is NOT listed as in-flight. ---
 jq -n --arg k cafecafecafecafe \
-   '{($k): {id:"OLD-1", provider:"claude", role:"execute", repo:"/r",
+   '{($k): {id:"OLD-1", provider:"opencode", role:"execute", repo:"/r",
             branch:"feat/old", log:"/tmp/o.jsonl", status:"running",
             started_at:"2000-01-01T00:00:00Z", updated_at:"2000-01-01T00:00:00Z"}}' \
    > "$SDIR/child-sessions.json"
@@ -2246,13 +2194,13 @@ if (( STUB_OK )); then
   fi
 else
   for t in 140 143 144; do
-    printf 'SKIP  %s  child resume-on-continue (claude stub unavailable)\n' "$t"
+    printf 'SKIP  %s  child resume-on-continue (opencode stub unavailable)\n' "$t"
   done
 fi
 
 # ========================================================================
 # 150-156. `cerebro answer` -- resume a paused child with an answer.
-# Validation/resolution paths fire before any claude invocation; the
+# Validation/resolution paths fire before any opencode invocation; the
 # stub-backed cases verify the resume actually happens.
 # ========================================================================
 
@@ -2308,9 +2256,9 @@ if (( STUB_OK )); then
   AXK2="$(printf '%s\0execute\0branch:feat/ans|plan:%s' "$REPO" "$AXP2" | shasum | cut -d' ' -f1 | cut -c1-16)"
   jq -n --arg k1 "$AXK1" --arg k2 "$AXK2" --arg repo "$REPO" \
         --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        '{($k1): {id:"CHILD-ONE", provider:"claude", role:"execute", repo:$repo,
+        '{($k1): {id:"CHILD-ONE", provider:"opencode", role:"execute", repo:$repo,
                   branch:"feat/ans", status:"done", updated_at:$ts},
-          ($k2): {id:"CHILD-TWO", provider:"claude", role:"execute", repo:$repo,
+          ($k2): {id:"CHILD-TWO", provider:"opencode", role:"execute", repo:$repo,
                   branch:"feat/ans", status:"done", updated_at:$ts}}' \
         > "$AXDIR/child-sessions.json"
   env PATH="$ID_STUB_PATH" CEREBRO_SESSION_ID="$AXSESS" \
@@ -2324,19 +2272,20 @@ if (( STUB_OK )); then
     failures+=("155b answer exact child")
   fi
 
-  # --- 156. answer rejects non-claude child sessions such as codex audit. ---
-  CSESS="answer-codex-session"; CSDIR="$CEREBRO_HOME/sessions/$CSESS"
+  # --- 156. answer rejects non-answerable child sessions such as a review/audit
+  # child (only execute / apply-review / doc-write children pause for answers). ---
+  CSESS="answer-review-session"; CSDIR="$CEREBRO_HOME/sessions/$CSESS"
   mkdir -p "$CSDIR/children"; : > "$CSDIR/transcript.jsonl"
   jq -n --arg repo "$REPO" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        '{auditkey: {id:"CODEX-CHILD", provider:"codex", role:"audit", repo:$repo,
+        '{auditkey: {id:"REVIEW-CHILD", provider:"opencode", role:"audit", repo:$repo,
                     branch:"audit", status:"done", updated_at:$ts}}' \
         > "$CSDIR/child-sessions.json"
-  STDERR_CONTAINS="not an answerable claude child" \
-  run_case 156 "answer codex child rejected" 1 -- \
-    env CEREBRO_SESSION_ID="$CSESS" "$CEREBRO_BIN" answer CODEX-CHILD "go"
+  STDERR_CONTAINS="not an answerable opencode child" \
+  run_case 156 "answer review/audit child rejected" 1 -- \
+    env CEREBRO_SESSION_ID="$CSESS" "$CEREBRO_BIN" answer REVIEW-CHILD "go"
 else
   for t in 154 155 155b 156; do
-    printf 'SKIP  %s  answer resume (claude stub unavailable)\n' "$t"
+    printf 'SKIP  %s  answer resume (opencode stub unavailable)\n' "$t"
   done
 fi
 
@@ -2344,10 +2293,10 @@ fi
 PRS="$WORKDIR/parse-stream-result"
 PIS="$WORKDIR/parse-stream-id"
 {
-  printf '%s\n' '{"type":"system","subtype":"init","session_id":"PARSE-1"}'
-  printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_parse","name":"Bash","input":{"command":"echo parse"}}]}}'
-  printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_parse","content":"parse","is_error":false}]}}'
-  printf '%s\n' '{"type":"result","subtype":"success","result":"ok"}'
+  printf '%s\n' '{"type":"step_start","sessionID":"PARSE-1","part":{"type":"step-start"}}'
+  printf '%s\n' '{"type":"tool_use","sessionID":"PARSE-1","part":{"type":"tool","tool":"bash","callID":"c1","state":{"status":"completed","input":{"command":"echo parse"},"output":"parse"}}}'
+  printf '%s\n' '{"type":"text","sessionID":"PARSE-1","part":{"type":"text","text":"ok"}}'
+  printf '%s\n' '{"type":"step_finish","sessionID":"PARSE-1","part":{"type":"step-finish","reason":"stop"}}'
 } | { python3 "$here/../lib/python/parse_stream.py" "$PRS" "$PIS" 2>&1; } | python3 -c 'pass' >/dev/null
 prsrc=$?
 if [[ $prsrc -eq 0 && "$(cat "$PRS" 2>/dev/null)" == "ok" && "$(cat "$PIS" 2>/dev/null)" == "PARSE-1" ]]; then
