@@ -96,16 +96,22 @@ pair_begin() {
 # those events to the child log, and pipes them through parse_stream.py (session
 # id + closing message capture). Returns parse_stream's exit code. The server
 # was already rooted at <cwd> by pair_begin, so the cwd arg is informational
-# here. <model> defaults to CEREBRO_MODEL.
+# here. <model> defaults to CEREBRO_MODEL. The pump's stderr (rejected-prompt
+# diagnostics) is captured to a .pump.log sidecar beside the child log.
 pair_run() {
   local cwd="$1" prompt="$2" agent="$3" resume="$4" child_log="$5" \
         msg_capture="$6" id_capture="$7" store_file="$8" ckey="$9" \
         model="${10:-$CEREBRO_MODEL}"
+  # The pump's stderr carries rejected-prompt diagnostics (e.g. a 400 from
+  # opencode serve over a model-shape mismatch). Capture it to a sidecar beside
+  # the child log instead of black-holing it, so a failed turn is debuggable
+  # rather than presenting as an empty .jsonl with no explanation.
+  local pump_log="${child_log%.jsonl}.pump.log"
   printf '%s' "$prompt" \
     | python3 "$CEREBRO_LIB_DIR/python/pair_pump.py" \
         "$PAIR_BASE_URL" "$PAIR_SID" "$agent" "$model" \
         "$PAIR_FIFO" "$PAIR_STEER" "$child_log" \
-        "$PAIR_IDLE" "$PAIR_STALL" "$PAIR_STALL_BUSY" 2>/dev/null \
+        "$PAIR_IDLE" "$PAIR_STALL" "$PAIR_STALL_BUSY" 2>"$pump_log" \
     | tee "$child_log" \
     | python3 "$CEREBRO_LIB_DIR/python/parse_stream.py" \
         "$msg_capture" "$id_capture" "$store_file" "$ckey"

@@ -17,7 +17,7 @@
 # Pure stdlib (urllib) so it has no dependencies beyond python3.
 
 import base64, json, os, sys, threading, time, queue
-import urllib.request
+import urllib.request, urllib.error
 
 base_url   = sys.argv[1].rstrip("/")
 session_id = sys.argv[2]
@@ -31,7 +31,18 @@ stall_secs = float(sys.argv[9]) if sys.argv[9] else 180.0
 stall_busy_secs = float(sys.argv[10]) if len(sys.argv) > 10 and sys.argv[10] else 450.0
 
 
+def log_err(msg):
+    try:
+        sys.stderr.write(msg.rstrip("\n") + "\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
 def _post(path, payload):
+    # Returns the HTTP status (0 on transport failure). A rejected request is
+    # reported to stderr -- the pump's stderr is captured to a diagnostic
+    # sidecar by pair_run -- so a bad payload is visible rather than swallowed.
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(base_url + path, data=data,
                                  headers={"content-type": "application/json"},
@@ -39,14 +50,44 @@ def _post(path, payload):
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             return r.status
-    except Exception:
+    except urllib.error.HTTPError as e:
+        try:
+            detail = e.read().decode("utf-8", "replace")
+        except Exception:
+            detail = ""
+        log_err(f"pair_pump: POST {path} -> HTTP {e.code} {e.reason}: {detail}")
+        return e.code
+    except Exception as e:
+        log_err(f"pair_pump: POST {path} failed: {e!r}")
         return 0
+
+
+def model_payload():
+    # opencode serve expects model as an object {providerID, modelID}; the
+    # CEREBRO_MODEL string is "<provider>/<model>" (e.g.
+    # "github-copilot/claude-opus-4.8"). Split on the first slash. If it can't
+    # be parsed into both halves, omit model entirely (the server falls back to
+    # the session/agent default) rather than send a shape the server rejects.
+    if not model or "/" not in model:
+        if model:
+            log_err(f"pair_pump: cannot parse model {model!r} as provider/model; "
+                    "omitting model field")
+        return None
+    provider, _, model_id = model.partition("/")
+    provider = provider.strip()
+    model_id = model_id.strip()
+    if not provider or not model_id:
+        log_err(f"pair_pump: cannot parse model {model!r} as provider/model; "
+                "omitting model field")
+        return None
+    return {"providerID": provider, "modelID": model_id}
 
 
 def send_prompt(text):
     body = {"parts": [{"type": "text", "text": text}], "agent": agent}
-    if model:
-        body["model"] = model
+    mp = model_payload()
+    if mp:
+        body["model"] = mp
     return _post(f"/session/{session_id}/prompt_async", body)
 
 
@@ -255,7 +296,9 @@ reader.start()
 # don't miss early parts.
 time.sleep(0.4)
 
-if send_prompt(initial_prompt) == 0:
+if not (200 <= send_prompt(initial_prompt) < 300):
+    log_err("pair_pump: initial prompt was not accepted by opencode serve; "
+            "no events will follow (see the HTTP error above). Aborting.")
     state["stop"] = True
     sys.exit(1)
 
