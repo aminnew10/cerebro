@@ -316,7 +316,7 @@ build_timeout_cmd() {
 # preferences and are materialised by the launch path instead.
 materialise_home() {
   mkdir -p "$CEREBRO_HOME/.opencode/agent" "$CEREBRO_HOME/.opencode/plugin" \
-    "$CEREBRO_HOME/sessions" "$CEREBRO_HOME/templates" \
+    "$CEREBRO_HOME/sessions" "$CEREBRO_HOME/templates" "$CEREBRO_HOME/overlays" \
     || die "cannot create $CEREBRO_HOME"
 
   write_if_changed "$CEREBRO_HOME/.opencode/opencode.json" "$(cerebro_opencode_json)"

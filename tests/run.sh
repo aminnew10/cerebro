@@ -2417,6 +2417,114 @@ else
   failures+=("166b plans rm escaped the plans dir")
 fi
 
+# ========================================================================
+# 167-176. Harness overlays (user-owned, append-onto-shipped-prompts) and
+# `cerebro improve` argument validation + prompt loader. Overlays live under
+# $CEREBRO_HOME/overlays/ and are never materialised.
+# ========================================================================
+
+OVERLAY_DIR="$CEREBRO_HOME/overlays"
+
+# --- 167. overlay set grader writes overlays/grader.md ---
+run_case 167 "overlay set grader writes file" 0 -- \
+  "$CEREBRO_BIN" overlay set grader "End every report with GRADER_X."
+if [[ -s "$OVERLAY_DIR/grader.md" ]] && grep -q "GRADER_X" "$OVERLAY_DIR/grader.md"; then
+  printf 'PASS  167b overlay set grader wrote overlays/grader.md\n'; pass=$((pass + 1))
+else
+  printf 'FAIL  167b overlay set grader did not write file\n'; fail=$((fail + 1))
+  failures+=("167b overlay grader file missing")
+fi
+
+# --- 168. overlay show grader prints the body ---
+STDOUT_CONTAINS="GRADER_X" \
+run_case 168 "overlay show grader prints body" 0 -- "$CEREBRO_BIN" overlay show grader
+
+# --- 168b. overlay show (no target) lists targets with present/absent ---
+STDOUT_CONTAINS="grader" \
+run_case 168b "overlay show lists all targets" 0 -- "$CEREBRO_BIN" overlay show
+
+# --- 169. overlay rm grader removes the file ---
+run_case 169 "overlay rm grader" 0 -- "$CEREBRO_BIN" overlay rm grader
+if [[ ! -e "$OVERLAY_DIR/grader.md" ]]; then
+  printf 'PASS  169b overlay rm removed overlays/grader.md\n'; pass=$((pass + 1))
+else
+  printf 'FAIL  169b overlay rm left the file behind\n'; fail=$((fail + 1))
+  failures+=("169b overlay grader file not removed")
+fi
+
+# --- 170. invalid target rejected with the valid-target list ---
+STDERR_CONTAINS="valid targets" \
+run_case 170 "overlay set bogus target rejected" 1 -- \
+  "$CEREBRO_BIN" overlay set bogus "x"
+
+# --- 171. empty body rejected with usage ---
+STDERR_CONTAINS="usage: cerebro overlay set" \
+run_case 171 "overlay set empty body rejected" 1 -- \
+  "$CEREBRO_BIN" overlay set system "   "
+
+# --- 172. over-cap body rejected ---
+BIG="$(head -c 5000 < /dev/zero | tr '\0' 'x')"
+STDERR_CONTAINS="too large" \
+run_case 172 "overlay set over-cap body rejected" 1 -- \
+  "$CEREBRO_BIN" overlay set system "$BIG"
+
+  # --- 173. loader wiring: child_agent_file execute carries the overlay, and
+  # stops carrying it once the overlay is removed. Source the lib and call the
+  # function directly (no agent spawn). ---
+  ov_fn() {  # run a lib function in a sourced subshell with the test env
+    bash -c '
+      set -uo pipefail
+      CEREBRO_LIB_DIR="$1"; shift
+      . "$CEREBRO_LIB_DIR/config.sh"
+      . "$CEREBRO_LIB_DIR/helpers.sh"
+      . "$CEREBRO_LIB_DIR/payloads.sh"
+      . "$CEREBRO_LIB_DIR/session-store.sh"
+      for _f in "$CEREBRO_LIB_DIR"/commands/*.sh; do . "$_f"; done
+      "$@"
+    ' _ "$here/../lib" "$@"
+  }
+
+  "$CEREBRO_BIN" overlay set execute "ZZMARKER" >/dev/null 2>&1
+  ov_with="$(ov_fn child_agent_file execute 2>/dev/null)"
+  "$CEREBRO_BIN" overlay rm execute >/dev/null 2>&1
+  ov_without="$(ov_fn child_agent_file execute 2>/dev/null)"
+  if [[ "$ov_with" == *"ZZMARKER"* && "$ov_without" != *"ZZMARKER"* ]]; then
+    printf 'PASS  173  child_agent_file appends overlay, drops it after rm\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  173  overlay loader wiring [with=%s without=%s]\n' \
+      "${ov_with: -40}" "${ov_without: -40}"; fail=$((fail + 1))
+    failures+=("173 overlay loader wiring")
+  fi
+
+# --- 174. materialise_home creates overlays/ but writes NO file into it. ---
+MHOME="$WORKDIR/mhome"
+mh_out="$(CEREBRO_HOME="$MHOME" ov_fn materialise_home 2>&1)"
+if [[ -d "$MHOME/overlays" ]] && [[ -z "$(ls -A "$MHOME/overlays" 2>/dev/null)" ]]; then
+  printf 'PASS  174  materialise_home creates empty overlays/ dir\n'; pass=$((pass + 1))
+else
+  printf 'FAIL  174  materialise_home overlays/ [exists=%s contents=%s out=%s]\n' \
+    "$([[ -d "$MHOME/overlays" ]] && echo y || echo n)" \
+    "$(ls -A "$MHOME/overlays" 2>/dev/null)" "$mh_out"; fail=$((fail + 1))
+  failures+=("174 materialise_home overlays dir")
+fi
+
+# --- 175. improve with no repo arg / non-absolute path errors with usage. ---
+STDERR_CONTAINS="usage: cerebro improve" \
+run_case 175 "improve no repo arg rejected" 1 -- "$CEREBRO_BIN" improve
+
+STDERR_CONTAINS="must be absolute" \
+run_case 175b "improve non-absolute repo rejected" 1 -- "$CEREBRO_BIN" improve relative/path
+
+# --- 176. cerebro_improve_prompt loads prompts/improve.md after the readonly
+# note (no phantom path), and includes a HILL CLIMB instruction. ---
+imp_prompt="$(ov_fn cerebro_improve_prompt 2>/dev/null)"
+if [[ "$imp_prompt" == *"HILL CLIMB"* ]] && [[ "$imp_prompt" == *"recur"* ]]; then
+  printf 'PASS  176  cerebro_improve_prompt loads improve.md\n'; pass=$((pass + 1))
+else
+  printf 'FAIL  176  cerebro_improve_prompt missing improve.md content\n'; fail=$((fail + 1))
+  failures+=("176 cerebro_improve_prompt content")
+fi
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 if (( fail > 0 )); then
   printf '\nFailures:\n'

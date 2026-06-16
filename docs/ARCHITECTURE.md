@@ -322,6 +322,38 @@ into `$CEREBRO_HOME/.opencode` on every launch by `materialise_home()`:
 `install.sh`), no asset paths to resolve at runtime, and a guarantee
 that the prompt version always matches the code version.
 
+**Overlays are the user-owned counterpart.** The shipped payloads are
+never edited in place by a user — a `git pull` would clobber the change.
+Instead, up to five plain-markdown files under `$CEREBRO_HOME/overlays/`
+(`system`, `execute`, `apply-review`, `doc-write`, `grader`) are
+*appended* by the loaders onto the corresponding shipped prompt/grader
+(`orchestrator_append_prompt`, `child_sys_prompt`, `cerebro_audit_prompt`,
+and the inline review grader in `cmd_review`). They are **never
+materialised** — `materialise_home()` only `mkdir`s the dir and writes no
+file, exactly like `learnings.md` — so a user tunes any prompt surface
+locally without forking and the edit survives `git pull`. An absent or
+whitespace-only overlay changes nothing, so behaviour is byte-identical
+when none is set. `cerebro overlay set/show/rm` is the only writer (the
+orchestrator has no Write tool), capped by `CEREBRO_OVERLAY_CAP`. This is
+the GitHub-free apply surface downstream users need: they install from
+the maintainer's clone and cannot push there, so improvements land in
+overlays rather than the shipped files.
+
+**The hill-climbing (analysis) loop.** `cerebro improve` closes the
+improvement loop without breaking invariant #1 (the orchestrator never
+mutates code directly). It is codex-as-analysis-agent: a read-only
+`codex exec` (cwd = the cerebro source repo, so it cites real harness
+files) mines the on-disk trace corpus under `$CEREBRO_HOME`
+(`sessions/*/children/*.jsonl` trajectories, `transcript.jsonl`
+milestones, grader feedback, the applied learnings/overlays) for
+problems that recur across runs, and writes findings to
+`sessions/<id>/improvements/improve.md` ending in a `HILL CLIMB:`
+verdict. Same stream/`-o`/failure shape as `review` (decision 8). It
+only proposes; the orchestrator reads the findings and routes each
+accepted item back into an overlay (or `learn-set`), or — for a
+maintainer of the source — an upstream PR. No auto-apply, no scheduled
+runs.
+
 ### 8. Streams over buffers: one pipeline per child
 
 Every opencode child runs inside one pipeline (the single seam is

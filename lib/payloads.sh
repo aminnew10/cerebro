@@ -40,7 +40,21 @@ cerebro_reviewer_note() {
 # `cerebro audit` (the plan / spec / context blocks are appended after it). The
 # read-only constraints live in the agent, so this is just the audit task.
 cerebro_audit_prompt() {
-  cat "$(cerebro_payloads_dir)/prompts/audit.md"
+  local out; out="$(printf '%s\n\n%s' \
+    "$(cerebro_reviewer_note)" \
+    "$(cat "$(cerebro_payloads_dir)/prompts/audit.md")")"
+  local ov; ov="$(overlay_body grader)"
+  [[ -n "$ov" ]] && out="$(printf '%s\n\n# Local grader overlay\n%s' "$out" "$ov")"
+  printf '%s\n' "$out"
+}
+
+# The hill-climbing analysis prompt fed to the read-only reviewer child
+# spawned by `cerebro improve` (the trace-corpus locations / context are
+# appended after it). Mirrors cerebro_audit_prompt.
+cerebro_improve_prompt() {
+  printf '%s\n\n%s\n' \
+    "$(cerebro_reviewer_note)" \
+    "$(cat "$(cerebro_payloads_dir)/prompts/improve.md")"
 }
 
 # ----- opencode agents ------------------------------------------------------
@@ -86,7 +100,18 @@ child_agent_file() {
     doc-write)    desc="cerebro doc-write child: update user-facing docs for a shipped change" ;;
     *) die "child_agent_file: unknown role: $role" ;;
   esac
-  cat <<EOF
+child_agent_file() {
+  local role="$1"
+  local f="$(cerebro_payloads_dir)/prompts/$role.md"
+  local desc
+  case "$role" in
+    execute)      desc="cerebro execute child: implement a plan in an isolated worktree and open a PR" ;;
+    apply-review) desc="cerebro apply-review child: apply review findings or a fix on the current branch" ;;
+    doc-write)    desc="cerebro doc-write child: update user-facing docs for a shipped change" ;;
+    *) die "child_agent_file: unknown role: $role" ;;
+  esac
+  local out
+  out=$(cat <<EOF
 ---
 description: $desc
 mode: all
@@ -98,7 +123,15 @@ permission:
   external_directory: allow
 ---
 EOF
-  printf '%s\n\n%s\n' "$(cat "$f")" "$(child_noninteractive_note)"
+)
+  out="$(printf '%s\n%s\n\n%s' "$out" "$(cat "$f")" "$(child_noninteractive_note)")"
+  # Append the user-owned local overlay for this role, if any, so a user can
+  # tune a child role prompt without forking. This feeds both the original
+  # spawn and `cerebro answer` (which re-passes the identical system prompt).
+  local ov; ov="$(overlay_body "$role")"
+  [[ -n "$ov" ]] && out="$(printf '%s\n\n# Local overlay\n%s' "$out" "$ov")"
+  printf '%s' "$out"
+}
 }
 
 # reviewer_agent_file -- the opencode agent markdown for the read-only reviewer

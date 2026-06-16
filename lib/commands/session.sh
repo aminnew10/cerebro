@@ -8,10 +8,24 @@
 learnings_file()         { printf '%s\n' "$CEREBRO_HOME/learnings.md"; }
 pending_learnings_file() { printf '%s\n' "$CEREBRO_HOME/pending-learnings.md"; }
 
-# Build the orchestrator's full system prompt: the static catalog (shipped as a
-# payload) plus, when present, the user's learned preferences. learnings.md is
-# kept small (capped by cmd_learn_set) so it fits in the system message; a
-# whitespace-only file is treated as empty. Echoed on stdout.
+# User-owned harness overlays (global under $CEREBRO_HOME). Each overlay is a
+# plain-markdown file the loaders APPEND onto a shipped prompt/grader, so a user
+# can tune any prompt surface locally without forking -- the same user-owned
+# pattern as learnings.md. materialise_home() never creates or clobbers them; an
+# absent or whitespace-only overlay changes nothing.
+overlays_dir() { printf '%s\n' "$CEREBRO_HOME/overlays"; }
+overlay_file() { printf '%s\n' "$(overlays_dir)/$1.md"; }   # $1 = target
+overlay_body() {   # $1=target; echoes body only if present + non-whitespace
+  local f; f="$(overlay_file "$1")"
+  [[ -s "$f" ]] || return 0
+  local b; b="$(cat "$f")"
+  [[ -n "${b//[[:space:]]/}" ]] && printf '%s' "$b"
+}
+
+# Build the orchestrator's full system prompt: the static catalog plus, when
+# present, the user's learned preferences. learnings.md is kept small (capped
+# by cmd_learn_set) so it fits in the system message; a whitespace-only file
+# is treated as empty. Echoed on stdout.
 orchestrator_append_prompt() {
   local base; base="$(cerebro_system_prompt)"
   local lf body=""
@@ -21,7 +35,11 @@ orchestrator_append_prompt() {
     [[ -n "${body//[[:space:]]/}" ]] || body=""
   fi
   if [[ -n "$body" ]]; then
-    printf '%s\n\n# Learned preferences\n\nDurable preferences cerebro has learned from this user across past sessions. Honor them by default in every plan, execute, review, and apply-review decision unless the user overrides in the moment.\n\n%s\n' "$base" "$body"
+    base="$(printf '%s\n\n# Learned preferences\n\nDurable preferences cerebro has learned from this user across past sessions. Honor them by default in every plan, execute, review, and apply-review decision unless the user overrides in the moment.\n\n%s' "$base" "$body")"
+  fi
+  local ov; ov="$(overlay_body system)"
+  if [[ -n "$ov" ]]; then
+    printf '%s\n\n# Local harness overlay\n\n%s\n' "$base" "$ov"
   else
     printf '%s\n' "$base"
   fi

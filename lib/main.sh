@@ -17,6 +17,7 @@ main() {
     plan) shift; cmd_plan "$@" ;;
     plans) shift; cmd_plans "$@" ;;
     audit) shift; cmd_audit "$@" ;;
+    improve) shift; cmd_improve "$@" ;;
     execute) shift; cmd_execute "$@" ;;
     review) shift; cmd_review "$@" ;;
     apply-review) shift; cmd_apply_review "$@" ;;
@@ -32,6 +33,7 @@ main() {
     learnings)  shift; cmd_learnings "$@" ;;
     learn-note) shift; cmd_learn_note "$@" ;;
     learn-set)  shift; cmd_learn_set "$@" ;;
+    overlay)    shift; cmd_overlay "$@" ;;
     git)    shift; cmd_git "$@" ;;
     gh)     shift; cmd_gh "$@" ;;
     read)   shift; cmd_read "$@" ;;

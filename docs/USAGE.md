@@ -165,6 +165,26 @@ small global `learnings.md` that is injected into the system prompt of
 clarifying question first. `cerebro learnings` (ask the orchestrator)
 prints the active set.
 
+For tuning a specific prompt surface that `learnings.md` cannot reach —
+a child role prompt or the codex grader — ask the orchestrator to set a
+**local overlay**. Up to five user-owned markdown files under
+`~/.cerebro/overlays/` (`system`, `execute`, `apply-review`,
+`doc-write`, `grader`) are *appended* onto the corresponding shipped
+prompt. They are local, never materialised, and survive `git pull`, so
+you can adjust any prompt surface without forking. `cerebro overlay
+show` lists them.
+
+## Improve the harness from its own traces
+
+`cerebro improve <cerebro-source-repo>` runs codex as a read-only
+analysis agent over the accumulated trace corpus under `~/.cerebro`,
+mining problems that **recur across runs** and proposing the smallest
+fixes back into the harness. It only proposes — findings end in a
+`HILL CLIMB:` verdict, and the orchestrator routes each accepted item
+into a local overlay or `learnings.md` (or, if you maintain the cerebro
+source, an upstream PR). Nothing rewrites the harness unsupervised; run
+it on request.
+
 ## Skip the ceremony
 
 Planning and review are the default, never skipped on the
@@ -250,6 +270,7 @@ open in your editor:
 ```
 ~/.cerebro/
   learnings.md                       # confirmed preferences (injected into the prompt)
+  overlays/<target>.md               # user-owned prompt overlays (append onto shipped prompts)
   templates/AGENTS.md                # default dropped into new repos (edit freely)
   worktrees/<ckey>/                  # isolated per-task execute worktrees
                                      #   (GC stale ones with `cerebro worktrees cleanup`)
@@ -258,6 +279,8 @@ open in your editor:
     spec-history.jsonl               # every prior spec version
     plans/                           # plan markdown files
     children/                        # opencode event logs of every sub-agent + review findings
+    audits/                          # plan-audit findings
+    improvements/improve.md          # latest `cerebro improve` hill-climbing findings
     review-state/                    # per-repo last-reviewed SHA
 ```
 

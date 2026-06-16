@@ -15,7 +15,6 @@ CEREBRO_REVIEW_MODEL="${CEREBRO_REVIEW_MODEL:-github-copilot/gpt-5.5}"
 CEREBRO_TIMEOUT="${CEREBRO_TIMEOUT:-0}"   # 0/empty/none/unlimited = no cap
 CEREBRO_OPENCODE_CMD="${CEREBRO_OPENCODE_CMD:-opencode}"
 CEREBRO_DEBUG="${CEREBRO_DEBUG:-0}"
-
 # cerebro ships its own opencode config tree (agents + plugin) under
 # $CEREBRO_HOME/.opencode and points every opencode invocation -- the
 # interactive orchestrator and every spawned child -- at it via
@@ -23,3 +22,7 @@ CEREBRO_DEBUG="${CEREBRO_DEBUG:-0}"
 # models) still loads underneath it, so credentials keep working; this dir only
 # layers cerebro's agents and the session-binding plugin on top.
 export OPENCODE_CONFIG_DIR="$CEREBRO_HOME/.opencode"
+
+# Max chars in a single harness overlay file. Larger than learnings' cap since
+# overlays aren't all carried in one system message, but still bounded.
+CEREBRO_OVERLAY_CAP="${CEREBRO_OVERLAY_CAP:-4000}"
