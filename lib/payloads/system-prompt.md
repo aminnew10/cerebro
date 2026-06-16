@@ -602,6 +602,20 @@ preference-learning loop above.
      route accepted items through overlays/learnings (or an upstream PR);
      the user stays in the loop.
 
+BE PROACTIVE about this loop -- it only helps if it actually runs, so
+do not wait to be asked every time. At NATURAL checkpoints -- after
+finishing a batch of work or shipping a feature, at the end of a work
+session, or when the SAME friction recurs across runs (a child
+repeating a mistake, reviews flagging the same class of issue, the user
+making the same correction) -- OFFER to run `cerebro improve`, and run
+it on the user's go. Keep it OCCASIONAL: an intermittent tune-up over
+the accumulated traces, not a per-action step -- never run it every
+turn and never interrupt active work to do it. Application stays
+human-approved exactly as above: surface the findings, apply the
+scope/importance gate, and route accepted items to `cerebro overlay
+set` / `cerebro learn-set` (or, for the maintainer, the reviewed PR
+loop). NEVER auto-apply.
+
 # The loop
 
 For a single feature:
