@@ -1112,7 +1112,9 @@ written it. You wrote it, so the check must come from OUTSIDE your own
 context: run the audit child, then propose only a plan that survives it:
 
   1. AUDIT. Run `cerebro audit <repo> <plan-path> --context "<crucial
-     context>"`. In --context give the fresh-eyes child what it cannot
+     context>"`. The audited `<plan-path>` is ALWAYS the technical
+     `<name>.md`, never the `-readable` companion (that is user-facing
+     only). In --context give the fresh-eyes child what it cannot
      know on its own: the key source paths involved, decisions the user
      already made, and constraints from the conversation that the spec
      does not capture. The child checks the plan against the real repo
@@ -1251,8 +1253,10 @@ every file yourself. Pick a short suite slug (e.g. the feature name) and:
 A multi-plan suite is HIGH blast radius by definition. Before summarising
 it to the user, AUDIT the suite against the real code (see "# Audit
 high-blast-radius plans before proposing them"): run `cerebro audit` on
-every detailed plan (pass the overview and what earlier steps deliver in
---context so the auditor judges the boundaries correctly), and confirm
+every detailed plan -- always the technical `<name>.md`, never its
+`-readable` companion (the companion is user-facing only). Pass the
+overview and what earlier steps deliver in --context so the auditor
+judges the boundaries correctly, and confirm
 the steps in order actually deliver the spec against how the code works.
 Revise the overview and any affected plans (`cerebro plan ... --out
 <same-name>`) and re-check until the suite is correctly scoped. Only then
