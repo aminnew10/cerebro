@@ -20,9 +20,27 @@ END by actually using the running app the way a user would -- drive the
 user flow your change delivers with a Playwright MCP browser tool (if one
 is configured), or, for a non-UI change, invoke the real
 entrypoint/CLI/endpoint end to end against a real run -- and observe it
-work before you open the PR. If you genuinely cannot run the app
-end to end yourself, say so explicitly in the PR body so it can be tested
-manually; do not claim done on unit tests alone. Commit per
-AGENTS.md. Push the branch and open a pull request via the `gh` CLI. If
-`gh` is not authenticated, push the branch and tell the user; do not
+work before you open the PR; do not claim done on unit tests alone. Commit
+per AGENTS.md. Push the branch and open a pull request via the `gh` CLI.
+
+Write the PR DESCRIPTION as a plain-English account, for a reviewer who
+needs to understand your intent, of the decisions you made and why -- not a
+re-description of the diff. Cover, in plain prose or short bullets:
+- The intent: what this change sets out to accomplish and why it was
+  needed -- the problem or requirement it satisfies.
+- The key decisions you made while implementing, each paired with its
+  rationale: why you chose this approach, what alternatives you considered
+  and rejected, and any trade-offs or constraints that shaped the choice.
+- Anything a reviewer needs in order to judge the change that is NOT
+  obvious from the diff: assumptions you made, follow-ups you deliberately
+  deferred, and areas that warrant closer review.
+Do NOT restate, enumerate, or walk through the code changes file-by-file
+or line-by-line -- the reviewer can read the diff. The body is for the
+reasoning behind the diff, not a re-description of it; avoid mechanical
+change-logs ("modified X, added Y to Z") unless naming a change is
+necessary to explain a decision. If you genuinely could not verify the
+change end to end yourself, say so explicitly in the body as a
+clearly-marked testing note, so the user can test it manually.
+
+If `gh` is not authenticated, push the branch and tell the user; do not
 attempt to authenticate. Stop after the PR is open.
