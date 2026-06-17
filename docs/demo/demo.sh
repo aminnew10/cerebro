@@ -40,11 +40,14 @@ slow 0.6
 say "  ${D}⏺ cerebro grep /Users/amin/work/webapp \"router.use\" src/${N}"
 slow 0.5
 say "  ${D}⏺ cerebro plan \"# Rate-limit the public API…\" --out plan-1${N}"
+slow 0.5
+say "  ${D}⏺ cerebro plan \"# Rate-limit the public API (readable)…\" --out plan-1-readable${N}"
 slow 1.4
-say "${MA}●${N} Plan ready → ${YE}sessions/3f2c91ae/plans/plan-1.md${N}"
-say "    1. Token-bucket middleware in src/middleware/rate-limit.ts"
-say "    2. Wire into /api/* routes; limits via config"
-say "    3. Unit tests + 429 contract test"
+say "${MA}●${N} Plan ready → ${YE}/Users/amin/.cerebro/sessions/3f2c91ae/plans/plan-1-readable.md${N}"
+say "    1. Add a rate limiter that caps how often each client can hit the public API."
+say "    2. Apply it to every public endpoint; the limits come from config, not hard-coded."
+say "    3. Over-limit requests get a 429 with a Retry-After telling them when to come back."
+say "  ${D}(plain-English companion; links to the technical plan it was written from)${N}"
 say "  Read it and tell me to go."
 say ""
 slow 1.6

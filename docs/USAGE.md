@@ -33,11 +33,16 @@ Describe the change and the repo. The orchestrator:
 
 1. Records what you asked for as the **session spec** — the
    requirements of record (see [Guardrails](#guardrails-and-autonomy)).
-2. Drafts a plan into the session's `plans/` dir and gives you the
-   path. For high-blast-radius changes (many files, shared modules,
-   public APIs, schemas, auth paths) it first **audits** the plan
-   against the actual code — phantom targets, missed call sites, scope
-   creep, over-engineering — and revises it before proposing it.
+2. Drafts a plan into the session's `plans/` dir. Alongside the
+   detailed technical plan it also writes a plain-English **companion**
+   (`<name>-readable.md`) — the same plan with the dense code references
+   stripped — and the path it gives you is the companion's; the
+   companion links back to the technical plan, which stays the source of
+   truth that gets executed. For high-blast-radius changes (many files,
+   shared modules, public APIs, schemas, auth paths) it first
+   **audits** the technical plan against the actual code — phantom
+   targets, missed call sites, scope creep, over-engineering — and
+   revises it before proposing it.
 3. Waits for your explicit **"go"**.
 4. Executes the plan in a sub-agent running in an **isolated git
    worktree** of the repo (under `$CEREBRO_HOME/worktrees/`), never your
@@ -278,6 +283,8 @@ open in your editor:
     spec.md                          # current session spec (requirements of record)
     spec-history.jsonl               # every prior spec version
     plans/                           # plan markdown files
+                                     #   (each <name>.md has a plain-English
+                                     #    <name>-readable.md companion beside it)
     children/                        # opencode event logs of every sub-agent + review findings
     audits/                          # plan-audit findings
     improvements/improve.md          # latest `cerebro improve` hill-climbing findings
