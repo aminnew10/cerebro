@@ -349,3 +349,12 @@ write_if_missing() {
   [[ -f "$path" ]] && return 0
   printf '%s' "$content" > "$path"
 }
+
+reserve_orchestrator_port() {
+  local port
+  port="$(python3 "$CEREBRO_LIB_DIR/python/reserve_orchestrator_port.py" "$CEREBRO_SESSION_DIR")"
+  if [[ -z "$port" ]]; then
+    die "failed to reserve an orchestrator port"
+  fi
+  printf '%s\n' "$port"
+}

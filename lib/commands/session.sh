@@ -84,7 +84,9 @@ cmd_launch() {
   # exported CEREBRO_SESSION_ID binds every `cerebro` subcommand the
   # orchestrator runs back to this session (opencode's bash tool inherits env).
   local model_opt=(); [[ -n "$CEREBRO_MODEL" ]] && model_opt=(--model "$CEREBRO_MODEL")
-  exec "$CEREBRO_OPENCODE_CMD" --agent "$agent" "${model_opt[@]}"
+  local port; port="$(reserve_orchestrator_port)"
+  say "cerebro: Web UI available at http://127.0.0.1:$port"
+  exec "$CEREBRO_OPENCODE_CMD" --agent "$agent" "${model_opt[@]}" --port "$port"
 }
 
 # Build the observer session's system prompt: the full orchestrator prompt
@@ -175,11 +177,13 @@ cmd_launch_observer() {
   # type. With no target we stay fully interactive so the user can pick which
   # session to watch.
   local model_opt=(); [[ -n "$CEREBRO_MODEL" ]] && model_opt=(--model "$CEREBRO_MODEL")
+  local port; port="$(reserve_orchestrator_port)"
+  say "cerebro: Web UI available at http://127.0.0.1:$port"
   if [[ -n "$target" ]]; then
-    exec "$CEREBRO_OPENCODE_CMD" --agent "$agent" "${model_opt[@]}" \
+    exec "$CEREBRO_OPENCODE_CMD" --agent "$agent" "${model_opt[@]}" --port "$port" \
       --prompt "Start observing session $target now: run \`cerebro observe $target\`, narrate what you see, and keep looping until its children are done or I stop you."
   else
-    exec "$CEREBRO_OPENCODE_CMD" --agent "$agent" "${model_opt[@]}"
+    exec "$CEREBRO_OPENCODE_CMD" --agent "$agent" "${model_opt[@]}" --port "$port"
   fi
 }
 
@@ -221,11 +225,13 @@ cmd_resume() {
 
   cd "$CEREBRO_HOME" || die "cd to $CEREBRO_HOME failed"
   local model_opt=(); [[ -n "$CEREBRO_MODEL" ]] && model_opt=(--model "$CEREBRO_MODEL")
+  local port; port="$(reserve_orchestrator_port)"
+  say "cerebro: Web UI available at http://127.0.0.1:$port"
   if [[ -n "$ocid" ]]; then
-    exec "$CEREBRO_OPENCODE_CMD" --session "$ocid" --agent "$agent" "${model_opt[@]}"
+    exec "$CEREBRO_OPENCODE_CMD" --session "$ocid" --agent "$agent" "${model_opt[@]}" --port "$port"
   else
     warn "no stored opencode session id for $id; starting a fresh opencode conversation"
-    exec "$CEREBRO_OPENCODE_CMD" --agent "$agent" "${model_opt[@]}"
+    exec "$CEREBRO_OPENCODE_CMD" --agent "$agent" "${model_opt[@]}" --port "$port"
   fi
 }
 
