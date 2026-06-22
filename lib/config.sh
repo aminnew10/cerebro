@@ -7,7 +7,7 @@ set -uo pipefail
 CEREBRO_HOME="${CEREBRO_HOME:-$HOME/.cerebro}"
 # The model the orchestrator and every editing child (execute / apply-review /
 # doc-write / answer) run on. Latest Claude Opus by default.
-CEREBRO_MODEL="${CEREBRO_MODEL:-github-copilot/claude-opus-4.8}"
+CEREBRO_MODEL="${CEREBRO_MODEL:-github-copilot/gemini-3.1-pro-preview}"
 # The model the read-only reviewer/auditor (cerebro review / cerebro audit) runs
 # on -- a deliberately DIFFERENT model from the implementer, so the review is a
 # genuinely independent pair of eyes. GPT-5.5 by default.

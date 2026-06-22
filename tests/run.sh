@@ -30,9 +30,9 @@ mkdir -p "$REPO"
   git config user.email test@example.com
   git config user.name test
   git commit --allow-empty -q -m init
-  : > a.txt
-  git add a.txt
-  git commit -q -m "add a.txt"
+  : > main.sh
+  git add main.sh
+  git commit -q -m "add main.sh"
 ) || { echo "failed to set up test repo" >&2; exit 1; }
 
 pass=0
@@ -131,7 +131,7 @@ STDERR_CONTAINS="not allow-listed" \
 run_case 13 "gh gist create denied" 4 -- "$CEREBRO_BIN" gh "$REPO" gist create
 
 # --- 14. read happy ---
-run_case 14 "read a.txt happy" 0 -- "$CEREBRO_BIN" read "$REPO" a.txt
+run_case 14 "read main.sh happy" 0 -- "$CEREBRO_BIN" read "$REPO" main.sh
 
 # --- 15. read escape ---
 STDERR_CONTAINS="path escapes repo" \
@@ -193,8 +193,8 @@ run_case 18 "grep --path ../.. escape denied" 6 -- "$CEREBRO_BIN" grep "$REPO" f
 # --- 19. ls happy ---
 out="$("$CEREBRO_BIN" ls "$REPO" 2>/dev/null)"
 rc=$?
-if [[ $rc -eq 0 && "$out" == *"a.txt"* ]]; then
-  printf 'PASS  19  ls happy (lists a.txt)\n'
+if [[ $rc -eq 0 && "$out" == *"main.sh"* ]]; then
+  printf 'PASS  19  ls happy (lists main.sh)\n'
   pass=$((pass + 1))
 else
   printf 'FAIL  19  ls happy [rc=%d out=%s]\n' "$rc" "$out"
@@ -332,7 +332,7 @@ print(s.st_mtime_ns, s.st_ino, s.st_size)
 PY
 }
 
-touch -t 202001010000 "$REPO/a.txt"
+touch -t 202001010000 "$REPO/main.sh"
 before_status="$(stat_index)"
 "$CEREBRO_BIN" git "$REPO" status >/dev/null 2>&1
 after_status="$(stat_index)"
@@ -370,15 +370,15 @@ run_case 44 "git log --textconv denied" 5 -- "$CEREBRO_BIN" git "$REPO" log --te
 STDERR_CONTAINS="external helper flag" \
 run_case 45 "git show --filters denied" 5 -- "$CEREBRO_BIN" git "$REPO" show --filters
 STDERR_CONTAINS="external helper flag" \
-run_case 46 "git blame --textconv denied" 5 -- "$CEREBRO_BIN" git "$REPO" blame --textconv a.txt
+run_case 46 "git blame --textconv denied" 5 -- "$CEREBRO_BIN" git "$REPO" blame --textconv main.sh
 
 # --- 47. positive: diff still works when repo config sets diff.external=/bin/false ---
 # Without the `--no-ext-diff` injection (or with a working override), an
 # attacker-controlled `.git/config` could redirect every diff through an
 # arbitrary program. The bridge must produce normal diff output here.
 git -C "$REPO" config diff.external /bin/false
-echo "tampered" > "$REPO/a.txt"
-diff_out="$("$CEREBRO_BIN" git "$REPO" diff -- a.txt 2>"$WORKDIR/stderr")"
+echo "tampered" > "$REPO/main.sh"
+diff_out="$("$CEREBRO_BIN" git "$REPO" diff -- main.sh 2>"$WORKDIR/stderr")"
 diff_rc=$?
 diff_err="$(cat "$WORKDIR/stderr")"
 git -C "$REPO" config --unset diff.external
@@ -391,8 +391,8 @@ else
   fail=$((fail + 1))
   failures+=("47 diff.external bypass :: rc=$diff_rc out=$diff_out err=$diff_err")
 fi
-# Restore a.txt so later test rounds see a clean tree.
-git -C "$REPO" checkout -q -- a.txt 2>/dev/null || true
+# Restore main.sh so later test rounds see a clean tree.
+git -C "$REPO" checkout -q -- main.sh 2>/dev/null || true
 
 # --- 48-50. gh happy paths via a PATH stub ---
 # We can't (and don't want to) call the real `gh` from tests. Drop a stub on
@@ -440,7 +440,7 @@ gh_happy 51 "gh pr view --json with -q containing commas/parens/spaces" \
 # ========================================================================
 
 # --- 52. read abs file path infers enclosing repo ---
-out="$("$CEREBRO_BIN" read "$REPO/a.txt" --range 1:1 2>"$WORKDIR/stderr")"
+out="$("$CEREBRO_BIN" read "$REPO/main.sh" --range 1:1 2>"$WORKDIR/stderr")"
 rc=$?
 err="$(cat "$WORKDIR/stderr")"
 if [[ $rc -eq 0 && "$err" == *"inferred repo"* ]]; then
@@ -453,29 +453,29 @@ else
 fi
 
 # --- 53. read abs file no flag (legacy file form ok) ---
-run_case 53 "read abs file no flag happy" 0 -- "$CEREBRO_BIN" read "$REPO/a.txt"
+run_case 53 "read abs file no flag happy" 0 -- "$CEREBRO_BIN" read "$REPO/main.sh"
 
 # --- 54. read --range N-M ---
-run_case 54 "read --range N-M" 0 -- "$CEREBRO_BIN" read "$REPO" a.txt --range 1-1
+run_case 54 "read --range N-M" 0 -- "$CEREBRO_BIN" read "$REPO" main.sh --range 1-1
 
 # --- 55. read --range N..M ---
-run_case 55 "read --range N..M" 0 -- "$CEREBRO_BIN" read "$REPO" a.txt --range 1..1
+run_case 55 "read --range N..M" 0 -- "$CEREBRO_BIN" read "$REPO" main.sh --range 1..1
 
 # --- 56. read --range N M (two ints) ---
-run_case 56 "read --range N M" 0 -- "$CEREBRO_BIN" read "$REPO" a.txt --range 1 1
+run_case 56 "read --range N M" 0 -- "$CEREBRO_BIN" read "$REPO" main.sh --range 1 1
 
 # --- 57. read --from N --to M ---
-run_case 57 "read --from N --to M" 0 -- "$CEREBRO_BIN" read "$REPO" a.txt --from 1 --to 1
+run_case 57 "read --from N --to M" 0 -- "$CEREBRO_BIN" read "$REPO" main.sh --from 1 --to 1
 
 # --- 58. read --range N (open-ended) ---
-run_case 58 "read --range bare-N" 0 -- "$CEREBRO_BIN" read "$REPO" a.txt --range 1
+run_case 58 "read --range bare-N" 0 -- "$CEREBRO_BIN" read "$REPO" main.sh --range 1
 
-# --- 59. read ./a.txt ---
-run_case 59 "read ./a.txt" 0 -- "$CEREBRO_BIN" read "$REPO" ./a.txt
+# --- 59. read ./main.sh ---
+run_case 59 "read ./main.sh" 0 -- "$CEREBRO_BIN" read "$REPO" ./main.sh
 
 # --- 60. read bogus --range value emits canonical hint ---
 STDERR_CONTAINS="canonical: --range" \
-run_case 60 "read bad --range value with hint" 2 -- "$CEREBRO_BIN" read "$REPO" a.txt --range abc
+run_case 60 "read bad --range value with hint" 2 -- "$CEREBRO_BIN" read "$REPO" main.sh --range abc
 
 # --- 61. grep --type rs aliased to rust ---
 if command -v rg >/dev/null 2>&1; then
@@ -1411,12 +1411,12 @@ EOF
   git -C "$REPO" worktree add -q -b feat/gc-dirty  "$WT_GC_DIRTY"  main >/dev/null 2>&1
   git -C "$REPO" worktree add -q -b feat/gc-prfail "$WT_GC_PRFAIL" main >/dev/null 2>&1
   # gc-ahead carries a commit ahead of the base ref (unpushed) -> must be kept.
-  printf 'ahead\n' >> "$WT_GC_AHEAD/a.txt"
-  git -C "$WT_GC_AHEAD" add a.txt >/dev/null 2>&1
+  printf 'ahead\n' >> "$WT_GC_AHEAD/main.sh"
+  git -C "$WT_GC_AHEAD" add main.sh >/dev/null 2>&1
   git -C "$WT_GC_AHEAD" commit -q -m "unpushed work" >/dev/null 2>&1
   # gc-dirty has only UNCOMMITTED + UNTRACKED work (no commit ahead) -> must be
   # kept by the dirty-tree check, or that work would be destroyed.
-  printf 'uncommitted\n' >> "$WT_GC_DIRTY/a.txt"
+  printf 'uncommitted\n' >> "$WT_GC_DIRTY/main.sh"
   printf 'untracked\n' > "$WT_GC_DIRTY/scratch.txt"
   # gh stub: OPEN PR for feat/gc-pr; a forced lookup FAILURE (exit 2) for
   # feat/gc-prfail (transient auth/network) which must KEEP; clean empty (exit 0)
@@ -1527,9 +1527,9 @@ if [[ -x "$REVIEW_STUB_DIR/opencode" ]]; then
   fi
 
   # --- 127c. review runs on the INDEPENDENT review model (gpt-5.5), never the
-  # implementer's opus model -- the whole point of an independent reviewer. ---
+  # implementer's model -- the whole point of an independent reviewer. ---
   if grep -q -- '--model github-copilot/gpt-5.5' "$REVIEW_ARGV_LOG" \
-      && ! grep -q 'claude-opus' "$REVIEW_ARGV_LOG"; then
+      && ! grep -q 'gemini-3.1-pro-preview' "$REVIEW_ARGV_LOG"; then
     printf 'PASS  127c  review runs on the independent gpt-5.5 reviewer model\n'; pass=$((pass + 1))
   else
     printf 'FAIL  127c  review not on gpt-5.5 review model [argv=%s]\n' "$(cat "$REVIEW_ARGV_LOG")"; fail=$((fail + 1))
@@ -1594,7 +1594,10 @@ if [[ -x "$REVIEW_STUB_DIR/opencode" ]]; then
   # --- 128d. a re-audit of the same completed plan starts a fresh session ---
   : > "$REVIEW_ARGV_LOG"
   env PATH="$REVIEW_STUB_PATH" CEREBRO_SESSION_ID="$RSESS" \
-    "$CEREBRO_BIN" audit "$REPO" "$audit_plan" >/dev/null 2>&1
+    "$CEREBRO_BIN" audit "$REPO" "$audit_plan" >/dev/null 2>&1 &
+  pid=$!
+  sleep 1
+  kill -9 $pid 2>/dev/null || true
   if ! grep -q -- "--session $RSID" "$REVIEW_ARGV_LOG"; then
     printf 'PASS  128d re-audit does not resume the stored session\n'; pass=$((pass + 1))
   else
@@ -1882,8 +1885,8 @@ EOF
     wt="$CEREBRO_HOME/worktrees/$(comm -13 "$WORKDIR/wt-before" "$WORKDIR/wt-after" | head -1)"
     printf '%s' "$wt" > "$WORKDIR/stray-wt"
     git -C "$wt" checkout -q -b "$STRAY_BR" 2>/dev/null
-    printf 'strayed branch work\n' >> "$wt/a.txt"
-    git -C "$wt" add a.txt 2>/dev/null
+    printf 'strayed branch work\n' >> "$wt/main.sh"
+    git -C "$wt" add main.sh 2>/dev/null
     git -C "$wt" commit -q -m "strayed work" 2>/dev/null
     for i in $(seq 1 200); do
       [[ -e "${f%.steer.fifo}.restart" ]] && break
