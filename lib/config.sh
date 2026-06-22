@@ -5,6 +5,7 @@
 set -uo pipefail
 
 CEREBRO_HOME="${CEREBRO_HOME:-$HOME/.cerebro}"
+export CEREBRO_LIB_DIR
 # The model the orchestrator and every editing child (execute / apply-review /
 # doc-write / answer) run on. Latest Claude Opus by default.
 CEREBRO_MODEL="${CEREBRO_MODEL:-github-copilot/gemini-3.1-pro-preview}"

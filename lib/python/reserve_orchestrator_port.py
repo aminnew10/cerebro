@@ -48,7 +48,7 @@ def main():
                     except ValueError:
                         continue
                     
-                    if is_port_in_use(port):
+                    if session_id == 'pending' or is_port_in_use(port):
                         valid_entries.append((session_id, s_dir, port))
                         used_ports.add(port)
             
