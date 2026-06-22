@@ -100,16 +100,6 @@ child_agent_file() {
     doc-write)    desc="cerebro doc-write child: update user-facing docs for a shipped change" ;;
     *) die "child_agent_file: unknown role: $role" ;;
   esac
-child_agent_file() {
-  local role="$1"
-  local f="$(cerebro_payloads_dir)/prompts/$role.md"
-  local desc
-  case "$role" in
-    execute)      desc="cerebro execute child: implement a plan in an isolated worktree and open a PR" ;;
-    apply-review) desc="cerebro apply-review child: apply review findings or a fix on the current branch" ;;
-    doc-write)    desc="cerebro doc-write child: update user-facing docs for a shipped change" ;;
-    *) die "child_agent_file: unknown role: $role" ;;
-  esac
   local out
   out=$(cat <<EOF
 ---
@@ -131,7 +121,6 @@ EOF
   local ov; ov="$(overlay_body "$role")"
   [[ -n "$ov" ]] && out="$(printf '%s\n\n# Local overlay\n%s' "$out" "$ov")"
   printf '%s' "$out"
-}
 }
 
 # reviewer_agent_file -- the opencode agent markdown for the read-only reviewer
